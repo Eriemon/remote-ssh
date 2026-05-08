@@ -145,6 +145,27 @@ python .\scripts\validate_remote_ssh.py
 python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server-list.json>
 ```
 
+## 联系方式
+
+开发者：Jiyuan Liu。问题、合作或学术使用，请联系：[erie@seu.edu.cn](mailto:erie@seu.edu.cn)。
+
+## 引用
+
+如果本 skill 对你的研究、教学或工程流程有帮助，请引用。规范引用元数据以 [CITATION.cff](CITATION.cff) 为准。
+
+```bibtex
+@software{liu_2026_remote_ssh,
+  author       = {Jiyuan Liu},
+  title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
+  year         = {2026},
+  version      = {0.1.0},
+  date         = {2026-05-08},
+  url          = {https://github.com/Eriemon/remote-ssh},
+  license      = {Apache-2.0},
+  note         = {Agent skill package for conservative SSH-based development and test workflows}
+}
+```
+
 ## 许可证
 
 Apache-2.0，见 `LICENSE`。

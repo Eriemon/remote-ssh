@@ -165,6 +165,27 @@ Real SSH tests are opt-in and require an explicit private server list:
 python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server-list.json>
 ```
 
+## Contact
+
+Developer: Jiyuan Liu. For questions, collaboration, or academic use, contact: [erie@seu.edu.cn](mailto:erie@seu.edu.cn).
+
+## Citation
+
+If this skill helps your research, teaching, or engineering workflow, please cite it. The canonical citation metadata is maintained in [CITATION.cff](CITATION.cff).
+
+```bibtex
+@software{liu_2026_remote_ssh,
+  author       = {Jiyuan Liu},
+  title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
+  year         = {2026},
+  version      = {0.1.0},
+  date         = {2026-05-08},
+  url          = {https://github.com/Eriemon/remote-ssh},
+  license      = {Apache-2.0},
+  note         = {Agent skill package for conservative SSH-based development and test workflows}
+}
+```
+
 ## License
 
 Apache-2.0. See `LICENSE`.

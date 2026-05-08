@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="520" viewBox="0 0 1440 520" role="img" aria-labelledby="title desc">
+  <title id="title">remote-ssh project hero</title>
+  <desc id="desc">A polished open-source hero graphic showing a local terminal, redacted SSH target selection, and reviewed remote execution.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.45" stop-color="#0f3f4f"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e0f2fe"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#020617" flood-opacity="0.34"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1440" height="520" fill="url(#sky)"/>
+  <path d="M0 373 C143 308 269 419 435 359 C591 303 687 214 862 254 C1038 294 1143 410 1440 320 L1440 520 L0 520 Z" fill="#14b8a6" opacity="0.15"/>
+  <path d="M0 134 C158 189 309 86 482 127 C657 168 786 279 982 210 C1178 141 1286 107 1440 149" fill="none" stroke="#fde68a" stroke-width="3" opacity="0.55"/>
+  <circle cx="1238" cy="86" r="98" fill="#22d3ee" opacity="0.12" filter="url(#glow)"/>
+  <circle cx="251" cy="422" r="116" fill="#f59e0b" opacity="0.10" filter="url(#glow)"/>
+
+  <g transform="translate(104 78)">
+    <text x="0" y="0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" fill="#bae6fd" opacity="0.95">Codex-ready agent skill</text>
+    <text x="0" y="58" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="64" font-weight="800" fill="#f8fafc">remote-ssh</text>
+    <text x="0" y="100" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" fill="#e0f2fe">Discover locally. Redact by default. Execute explicitly.</text>
+  </g>
+
+  <g transform="translate(110 218)" filter="url(#softShadow)">
+    <rect width="540" height="224" rx="16" fill="#020617"/>
+    <rect width="540" height="44" rx="16" fill="#111827"/>
+    <path d="M0 28 Q0 0 28 0 H512 Q540 0 540 28 V44 H0 Z" fill="#111827"/>
+    <circle cx="30" cy="22" r="6" fill="#ef4444"/>
+    <circle cx="52" cy="22" r="6" fill="#f59e0b"/>
+    <circle cx="74" cy="22" r="6" fill="#22c55e"/>
+    <text x="32" y="84" font-family="Consolas, 'SFMono-Regular', monospace" font-size="22" fill="#67e8f9">$ python scripts/remote_ssh.py choices</text>
+    <text x="32" y="124" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#e5e7eb">FPGA Lab     ***@***   key: ***</text>
+    <text x="32" y="158" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#a7f3d0">status       local checks ready</text>
+    <text x="32" y="192" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#fde68a">next         request review</text>
+  </g>
+
+  <g transform="translate(748 146)" filter="url(#softShadow)">
+    <rect width="556" height="302" rx="20" fill="url(#card)"/>
+    <g transform="translate(50 42)">
+      <rect width="456" height="58" rx="10" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+      <circle cx="34" cy="29" r="12" fill="url(#teal)"/>
+      <text x="64" y="37" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="750" fill="#111827">Local server-list JSON</text>
+
+      <path d="M228 66 V94" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+      <rect y="100" width="456" height="58" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+      <circle cx="34" cy="129" r="12" fill="url(#teal)"/>
+      <text x="64" y="137" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="750" fill="#134e4a">Redacted target choice</text>
+
+      <path d="M228 166 V194" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+      <rect y="200" width="456" height="58" rx="10" fill="#ffffff" stroke="#c2410c" stroke-width="2"/>
+      <circle cx="34" cy="229" r="12" fill="url(#amber)"/>
+      <text x="64" y="237" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="750" fill="#7c2d12">Reviewed SSH execution</text>
+    </g>
+  </g>
+
+  <g transform="translate(672 314)">
+    <path d="M0 0 H58" stroke="#f8fafc" stroke-width="5" stroke-linecap="round"/>
+    <path d="M46 -15 L66 0 L46 15" fill="none" stroke="#f8fafc" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(1180 50)" opacity="0.9">
+    <rect width="126" height="34" rx="17" fill="#ecfeff" opacity="0.92"/>
+    <text x="63" y="23" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#155e75">Apache-2.0</text>
+  </g>
+</svg>

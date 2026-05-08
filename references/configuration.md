@@ -1,0 +1,211 @@
+# Erie Remote SSH Settings
+
+Use `config/defaults.json` to keep paths and validation choices out of scripts.
+
+## Contents
+
+- Loading Rules
+- Path Resolution
+- Fields
+- Server List Creation
+- Interactive Server Add
+- Software Catalog and Cache
+- Server List JSON
+- Passwordless SSH Guidance
+- Automation Entry Points
+- Example
+- Request and Download Directories
+
+## Loading Rules
+
+- Helper commands use `erie-remote-ssh/config/defaults.json` when `--settings` is not provided.
+- `--settings <json>` selects another settings file.
+- `--config <server-list.json>` overrides `paths.default_server_list`.
+- When neither flag is provided, the default settings point to `${skill_dir}/config/server_list.local.json`.
+- `discover`, `init-config`, and `add-server --interactive` use the same resolution order.
+- `validate_remote_ssh.py --server-list <json>` overrides `paths.default_server_list`.
+- `validate_remote_ssh.py --skill-validator <path>` overrides `tools.skill_validator_candidates`.
+
+## Path Resolution
+
+Settings paths support:
+
+- Relative paths resolved from the settings file directory.
+- Environment variables supported by the operating system.
+- `~` home directory expansion.
+- `${project_root}` for the repository root.
+- `${skill_dir}` for the `erie-remote-ssh` skill directory.
+- `${settings_dir}` for the settings file directory.
+- `${home}` for the current user's home directory.
+- `${env:NAME}` for environment variables.
+
+Empty `${env:NAME}` values are ignored when used as optional validator candidates.
+
+## Fields
+
+- `version`: Required integer. Use `1`.
+- `paths.default_server_list`: Server list JSON used when no CLI override is provided. The bundled default points to skill-local `config/server_list.local.json`.
+- `paths.validation_tmp_dir`: Temporary root directory used by validation. Each run creates and removes its own child directory.
+- `paths.requests_dir`: Directory for generated request JSON files. Keep it git-ignored.
+- `paths.downloads_dir`: Directory for `file-download` targets. Local download paths must stay inside this directory.
+- `tools.ssh_client`: SSH executable name or path.
+- `tools.scp_client`: SCP executable name or path.
+- `tools.skill_validator_candidates`: Ordered `quick_validate.py` candidates.
+- `ssh.default_workdir`: Default workdir prompt value for newly added servers. Defaults to `~/workspace`.
+- `ssh.default_timeout`: Positive integer timeout for remote validation commands.
+- `ssh.connect_timeout`: Value injected into SSH option templates.
+- `ssh.safe_options`: Default SSH options. Keep host-key writes disabled here.
+- `ssh.accept_new_host_key_options`: Explicit opt-in options for accepting new host keys.
+- `files.default_remote_tmp_dir`: Reserved relative remote temp directory name for workflows that need one.
+- `files.max_transfer_bytes`: Maximum regular file size allowed for `file-download`.
+- `inventory.catalog_version`: Positive integer copied into cached software scans.
+- `inventory.software_catalog`: Configured read-only software probes used to build the remote scan script. Each item has an `id`, optional PATH `commands`, optional shell `version_command` using `{path}`, optional `install_path_command`, and optional `directory_scans`.
+- `validation.positive_server`: Server selector for positive local tests.
+- `validation.warning_server`: Server selector expected to produce metadata warnings.
+- `validation.ssh_server`: Server selector for real SSH tests.
+- `validation.expected_inventory_contains`: Text snippets expected in inventory output.
+
+## Server List Creation
+
+Use `config/server_list.template.json` as the non-sensitive template when creating a real server list. Copy it to `config/server_list.local.json` or pass an external file with `--config`. Keep real server values out of committed files.
+
+Use `init-config` when the configured server list does not exist:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py init-config --settings <settings>
+```
+
+It creates this v1 structure:
+
+```json
+{
+  "version": 1,
+  "default_key_dir": "~/.ssh",
+  "servers": []
+}
+```
+
+Existing files are not overwritten unless `--force` is passed. Forced overwrites create a timestamped `.bak.*` file next to the server list.
+
+## Interactive Server Add
+
+Use `add-server --interactive` to add one configured SSH server:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py add-server --settings <settings> --interactive
+```
+
+Prompts:
+
+- `id`: Defaults to the next `server_N` value.
+- `name`: Defaults to the id.
+- `category`: Optional non-sensitive grouping label used by `choices`; edit the server list after add when a specific category is useful.
+- `functions`: Optional non-sensitive array of capabilities used by `choices`; edit the server list after add when explicit functions are useful.
+- `host`: Required hostname or IP, stored only in the server list.
+- `port`: Defaults to `22`; must be `1..65535`.
+- `username`: Required SSH username.
+- `key_name`: Required key filename or path; the helper does not create the private key during add, but the mandatory software scan for enabled servers requires it to exist and work for SSH.
+- `workdir`: Defaults to `ssh.default_workdir`, which is `~/workspace` in the bundled settings.
+- `enabled`: Defaults to `true`.
+- `notes`: Optional free text.
+
+The helper validates schema, rejects duplicate id/name selectors, backs up an existing server list, and writes via temporary file replacement. For enabled servers, it then runs a mandatory read-only software scan and caches the result in `software_scan`. If the scan fails, the server record is kept with `software_scan.status` set to `failed` and the add flow returns a failure code.
+
+## Software Catalog and Cache
+
+Use `scan-software` to refresh the cached software scan:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py scan-software --settings <settings> --server <id-or-name>
+```
+
+Use `software` to answer cached availability questions without reconnecting:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server <id-or-name>
+python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server <id-or-name> --name vivado
+```
+
+The bundled catalog scans Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, and Vitis. Vivado and Vitis also scan configured Xilinx install roots such as `/opt/Xilinx`, `/tools/Xilinx`, and `/usr/local/Xilinx`.
+
+Treat `inventory.software_catalog` as trusted local configuration. Its `version_command` and `install_path_command` templates are rendered into a POSIX shell script and executed read-only over SSH, so only reviewed skill or settings files should define them. Do not place untrusted user text into software catalog command templates.
+
+Directory scans must use absolute POSIX `base_dirs` and relative `subdir` / `executable` values. Invalid catalog shapes, duplicate software ids, missing probes, and non-absolute scan roots should fail before SSH execution with a clear settings error.
+
+Cached `software_scan.raw_summary` is a local operational artifact. It can include host inventory lines and installation paths, so keep real server lists and scan caches out of public docs and committed files.
+
+## Server List JSON
+
+The bundled default settings resolve `paths.default_server_list` to `${skill_dir}/config/server_list.local.json` from `erie-remote-ssh/config/defaults.json`.
+
+Resolution priority is:
+
+1. `--config <server-list.json>`
+2. `--settings <json>` with `paths.default_server_list`
+3. `erie-remote-ssh/config/defaults.json`
+
+The helper parses JSON with UTF-8, requires a root object, rejects unsupported versions, requires `servers` to be an array of objects, and validates each selected server before connecting. Keep real hostnames, usernames, ports, and key names in the server list only.
+
+Use optional `category` and `functions` fields to make server selection clear without exposing connection details:
+
+```json
+{
+  "id": "fpga_lab",
+  "name": "FPGA Lab Server",
+  "category": "FPGA",
+  "functions": ["Vivado synthesis", "Vitis acceleration", "workspace validation"]
+}
+```
+
+When these fields are absent, `choices` displays `Uncategorized` and may infer display-only functions from `notes`, `inventory_snapshot.description`, and cached installed tools in `software_scan`.
+
+## Passwordless SSH Guidance
+
+Use `setup-key` to inspect local key readiness without modifying local or remote SSH state:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py setup-key --settings <settings> --server <id-or-name>
+```
+
+It reports whether the private key and matching `.pub` file exist, reminds the operator that only the public key belongs in the remote account's `~/.ssh/authorized_keys`, and keeps default verification aligned with `BatchMode=yes`.
+
+## Automation Entry Points
+
+- Windows batch: `scripts/bat/config/configure_remote_ssh.bat`
+- Windows PowerShell: `scripts/powershell/config/configure_remote_ssh.ps1`
+- POSIX shell: `scripts/shell/config/configure_remote_ssh.sh`
+
+Both scripts run `discover` first. If no enabled SSH server is configured, they ask whether to start `add-server --interactive`, then run discovery again. They do not generate keys, modify SSH configuration, or scan networks. Enabled server additions connect only for the mandatory read-only software scan.
+
+## Example
+
+```json
+{
+  "version": 1,
+  "paths": {
+    "default_server_list": "${skill_dir}/config/server_list.local.json",
+    "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
+    "requests_dir": "${project_root}/requests",
+    "downloads_dir": "${project_root}/downloads"
+  },
+  "tools": {
+    "ssh_client": "ssh",
+    "scp_client": "scp",
+    "skill_validator_candidates": [
+      "${env:REMOTE_SSH_SKILL_VALIDATOR}",
+      "${home}/.codex/skills/.system/skill-creator/scripts/quick_validate.py"
+    ]
+  },
+  "ssh": {
+    "default_workdir": "~/workspace"
+  }
+}
+```
+
+Keep sensitive server values in the server list, not in settings documentation.
+
+## Request and Download Directories
+
+Request files are local audit artifacts. They record operation type, server id, relative paths, reason, risks, and timestamp; they do not store real hostnames, usernames, key names, key paths, or ports.
+
+Downloads are constrained to `paths.downloads_dir`. Use a custom settings file when a workflow needs a different project-local download root.

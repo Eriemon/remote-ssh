@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this agent skill, please cite it using the metadata below."
+title: "remote-ssh: An Agent Skill for Conservative SSH Workflows"
+type: software
+authors:
+  - family-names: "Liu"
+    given-names: "Jiyuan"
+    email: "erie@seu.edu.cn"
+abstract: "remote-ssh is a Codex-ready agent skill package for conservative SSH-based development and test workflows, including redacted target discovery, key and workspace checks, reviewed request files, bounded file operations, and validation evidence."
+keywords:
+  - agent skill
+  - Codex
+  - SSH
+  - remote development
+  - remote testing
+  - workflow safety
+repository-code: "https://github.com/Eriemon/remote-ssh"
+url: "https://github.com/Eriemon/remote-ssh"
+version: "0.1.0"
+date-released: "2026-05-08"
+year: 2026
+license: "Apache-2.0"

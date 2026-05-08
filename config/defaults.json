@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "paths": {
+    "default_server_list": "${skill_dir}/config/server_list.local.json",
+    "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
+    "requests_dir": "${project_root}/requests",
+    "downloads_dir": "${project_root}/downloads"
+  },
+  "tools": {
+    "ssh_client": "ssh",
+    "scp_client": "scp",
+    "skill_validator_candidates": [
+      "${env:REMOTE_SSH_SKILL_VALIDATOR}",
+      "${env:CODEX_HOME}/skills/.system/skill-creator/scripts/quick_validate.py",
+      "${home}/.codex/skills/.system/skill-creator/scripts/quick_validate.py"
+    ]
+  },
+  "ssh": {
+    "default_workdir": "~/workspace",
+    "default_timeout": 20,
+    "connect_timeout": 10,
+    "safe_options": [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=yes",
+      "-o",
+      "UpdateHostKeys=no",
+      "-o",
+      "ConnectTimeout=${connect_timeout}"
+    ],
+    "accept_new_host_key_options": [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      "UpdateHostKeys=no",
+      "-o",
+      "ConnectTimeout=${connect_timeout}"
+    ]
+  },
+  "files": {
+    "default_remote_tmp_dir": ".erie-remote-ssh",
+    "max_transfer_bytes": 104857600
+  },
+  "inventory": {
+    "catalog_version": 1,
+    "software_catalog": [
+      {
+        "id": "python",
+        "commands": ["python3", "python"],
+        "version_command": "{path} --version 2>&1 | head -n 1"
+      },
+      {
+        "id": "conda",
+        "commands": ["conda"],
+        "version_command": "{path} --version 2>&1 | head -n 1",
+        "install_path_command": "conda info --base 2>/dev/null | head -n 1"
+      },
+      {
+        "id": "cuda",
+        "commands": ["nvcc"],
+        "version_command": "{path} --version 2>&1 | awk '/release/ {print $0; exit}'"
+      },
+      {
+        "id": "nvidia_driver",
+        "commands": ["nvidia-smi"],
+        "version_command": "{path} --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n 1"
+      },
+      {
+        "id": "gcc",
+        "commands": ["gcc"],
+        "version_command": "{path} --version 2>&1 | head -n 1"
+      },
+      {
+        "id": "gpp",
+        "commands": ["g++"],
+        "version_command": "{path} --version 2>&1 | head -n 1"
+      },
+      {
+        "id": "cmake",
+        "commands": ["cmake"],
+        "version_command": "{path} --version 2>&1 | head -n 1"
+      },
+      {
+        "id": "vivado",
+        "commands": ["vivado"],
+        "version_command": "{path} -version 2>&1 | head -n 1",
+        "directory_scans": [
+          {
+            "base_dirs": ["/opt/Xilinx", "/tools/Xilinx", "/usr/local/Xilinx"],
+            "subdir": "Vivado",
+            "executable": "bin/vivado",
+            "version_command": "{path} -version 2>&1 | head -n 1"
+          }
+        ]
+      },
+      {
+        "id": "vitis",
+        "commands": ["vitis"],
+        "version_command": "{path} -version 2>&1 | head -n 1",
+        "directory_scans": [
+          {
+            "base_dirs": ["/opt/Xilinx", "/tools/Xilinx", "/usr/local/Xilinx"],
+            "subdir": "Vitis",
+            "executable": "bin/vitis",
+            "version_command": "{path} -version 2>&1 | head -n 1"
+          }
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "positive_server": "server_1",
+    "warning_server": "server_4",
+    "ssh_server": "server_1",
+    "expected_inventory_contains": [
+      "python:",
+      "not detected"
+    ]
+  }
+}

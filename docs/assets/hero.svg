@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="420" viewBox="0 0 1440 420" role="img" aria-labelledby="title desc">
+  <title id="title">remote-ssh hero</title>
+  <desc id="desc">A clean terminal and remote server workflow diagram for a conservative SSH agent skill.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="0.48" stop-color="#164e63"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#dbeafe"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="1440" height="420" rx="0" fill="url(#bg)"/>
+  <path d="M0 318 C178 274 318 363 494 316 C665 270 781 186 958 221 C1136 256 1243 356 1440 302 L1440 420 L0 420 Z" fill="#14b8a6" opacity="0.16"/>
+  <path d="M0 94 C170 138 334 76 504 112 C676 148 809 243 1004 193 C1188 146 1278 98 1440 126" fill="none" stroke="#f59e0b" stroke-width="3" opacity="0.55"/>
+
+  <g filter="url(#shadow)">
+    <rect x="114" y="92" width="536" height="250" rx="14" fill="#020617"/>
+    <rect x="114" y="92" width="536" height="42" rx="14" fill="#111827"/>
+    <circle cx="144" cy="113" r="6" fill="#ef4444"/>
+    <circle cx="166" cy="113" r="6" fill="#f59e0b"/>
+    <circle cx="188" cy="113" r="6" fill="#22c55e"/>
+    <text x="144" y="170" font-family="Consolas, 'SFMono-Regular', monospace" font-size="26" fill="#e5e7eb">remote-ssh</text>
+    <text x="144" y="214" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#67e8f9">$ discover</text>
+    <text x="144" y="248" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#a7f3d0">targets: redacted</text>
+    <text x="144" y="282" font-family="Consolas, 'SFMono-Regular', monospace" font-size="20" fill="#fde68a">request: review first</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="790" y="86" width="468" height="262" rx="18" fill="url(#panel)"/>
+    <rect x="842" y="128" width="364" height="56" rx="8" fill="#ffffff" stroke="#334155" stroke-width="2"/>
+    <text x="875" y="164" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#111827">Local JSON config</text>
+
+    <rect x="842" y="214" width="364" height="56" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+    <text x="875" y="250" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#134e4a">Redacted choices</text>
+
+    <rect x="842" y="300" width="364" height="56" rx="8" fill="#ffffff" stroke="#c2410c" stroke-width="2"/>
+    <text x="875" y="336" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#7c2d12">Reviewed execution</text>
+
+    <path d="M1024 184 L1024 214" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+    <path d="M1024 270 L1024 300" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M664 216 H760" stroke="#e5e7eb" stroke-width="5" stroke-linecap="round"/>
+    <path d="M748 202 L766 216 L748 230" fill="none" stroke="#e5e7eb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <text x="114" y="58" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" fill="#bae6fd">Codex-ready SSH workflow skill</text>
+  <text x="790" y="58" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" fill="#fde68a">Discover locally. Redact by default. Execute explicitly.</text>
+</svg>

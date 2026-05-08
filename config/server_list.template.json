@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "default_key_dir": "~/.ssh",
+  "servers": [
+    {
+      "id": "example_server",
+      "legacy_server_id": "",
+      "name": "Example SSH Server",
+      "category": "General",
+      "functions": [
+        "remote development",
+        "workspace validation"
+      ],
+      "type": "ssh",
+      "host": "ssh.example.invalid",
+      "port": 22,
+      "username": "your-ssh-user",
+      "key_name": "id_ed25519_example",
+      "workdir": "~/workspace",
+      "enabled": false,
+      "notes": "Copy this template to server_list.local.json or pass your own file with --config."
+    }
+  ]
+}

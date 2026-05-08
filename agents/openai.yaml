@@ -1,0 +1,4 @@
+interface:
+  display_name: "Erie Remote SSH"
+  short_description: "Conservative remote SSH for development/test workflows"
+  default_prompt: "Use $erie-remote-ssh only when a development or testing task explicitly needs SSH or remote server work: discover/list/choices for servers, add a server with mandatory software scan, query cached software availability, validate ~/workspace, review remote file or command requests, troubleshoot SSH, or collect inventory."

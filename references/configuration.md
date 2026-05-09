@@ -13,8 +13,9 @@ Use `config/defaults.json` to keep paths and validation choices out of scripts.
 - Server List JSON
 - Passwordless SSH Guidance
 - Automation Entry Points
+- Key Generation Guardrail
 - Example
-- Request and Download Directories
+- Request, Download, and Upload Directories
 
 ## Loading Rules
 
@@ -37,6 +38,7 @@ Settings paths support:
 - `${skill_dir}` for the `erie-remote-ssh` skill directory.
 - `${settings_dir}` for the settings file directory.
 - `${home}` for the current user's home directory.
+- `${cwd}` for the directory where the helper process is launched.
 - `${env:NAME}` for environment variables.
 
 Empty `${env:NAME}` values are ignored when used as optional validator candidates.
@@ -48,8 +50,10 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `paths.validation_tmp_dir`: Temporary root directory used by validation. Each run creates and removes its own child directory.
 - `paths.requests_dir`: Directory for generated request JSON files. Keep it git-ignored.
 - `paths.downloads_dir`: Directory for `file-download` targets. Local download paths must stay inside this directory.
+- `paths.upload_roots`: Non-empty list of local directories allowed as `request-upload --local` sources. Defaults to `${project_root}`. Use explicit workspace or data directories for uploads outside the skill project; do not configure a filesystem root or the whole user home directory.
 - `tools.ssh_client`: SSH executable name or path.
 - `tools.scp_client`: SCP executable name or path.
+- `tools.ssh_keygen`: SSH key generator executable name or path. Defaults to `ssh-keygen`; validation may replace it with a fake helper.
 - `tools.skill_validator_candidates`: Ordered `quick_validate.py` candidates.
 - `ssh.default_workdir`: Default workdir prompt value for newly added servers. Defaults to `~/workspace`.
 - `ssh.default_timeout`: Positive integer timeout for remote validation commands.
@@ -58,8 +62,8 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `ssh.accept_new_host_key_options`: Explicit opt-in options for accepting new host keys.
 - `files.default_remote_tmp_dir`: Reserved relative remote temp directory name for workflows that need one.
 - `files.max_transfer_bytes`: Maximum regular file size allowed for `file-download`.
-- `inventory.catalog_version`: Positive integer copied into cached software scans.
-- `inventory.software_catalog`: Configured read-only software probes used to build the remote scan script. Each item has an `id`, optional PATH `commands`, optional shell `version_command` using `{path}`, optional `install_path_command`, and optional `directory_scans`.
+- `inventory.catalog_version`: Positive integer copied into cached software scans. Increment it when catalog behavior changes enough that old caches may be incomplete.
+- `inventory.software_catalog`: Configured read-only software probes used to build the remote scan script. Each item has an `id`, optional PATH `commands`, optional `path_scan` (`first` or `all`), optional absolute `executable_globs`, optional shell `version_command` using `{path}`, optional `install_path_command`, and optional `directory_scans`.
 - `validation.positive_server`: Server selector for positive local tests.
 - `validation.warning_server`: Server selector expected to produce metadata warnings.
 - `validation.ssh_server`: Server selector for real SSH tests.
@@ -87,7 +91,23 @@ It creates this v1 structure:
 
 Existing files are not overwritten unless `--force` is passed. Forced overwrites create a timestamped `.bak.*` file next to the server list.
 
-## Interactive Server Add
+## Configuration Gate
+
+Use `configure --interactive` or a platform `configure_remote_ssh` wrapper before any server-list mutation:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py configure --settings <settings> --interactive
+```
+
+The agent must ask the user in the conversation before launching this gate. The CLI then asks for one of three modes and does not provide a default:
+
+- `script`: run guided configuration.
+- `manual`: print manual setup steps and do not mutate the server list.
+- `cancel`: exit without changes.
+
+Guided mode initializes a missing list, adds a server when no server exists, or shows a redacted server summary and asks whether to add, update, or cancel when entries already exist. That action prompt also has no default. Use `--server <id-or-name>` to go directly to updating one existing entry after the configuration mode gate.
+
+## Interactive Server Add and Update
 
 Use `add-server --interactive` to add one configured SSH server:
 
@@ -95,21 +115,34 @@ Use `add-server --interactive` to add one configured SSH server:
 python <skill-dir>\scripts\remote_ssh.py add-server --settings <settings> --interactive
 ```
 
-Prompts:
+Use `update-server --interactive --server <id-or-name>` to modify an existing entry:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py update-server --settings <settings> --server <id-or-name> --interactive
+```
+
+These direct commands are lower-level maintenance and validation entry points. Agent-guided user configuration should go through `configure --interactive` after the user explicitly chooses guided script mode.
+
+Prompted fields:
 
 - `id`: Defaults to the next `server_N` value.
 - `name`: Defaults to the id.
-- `category`: Optional non-sensitive grouping label used by `choices`; edit the server list after add when a specific category is useful.
-- `functions`: Optional non-sensitive array of capabilities used by `choices`; edit the server list after add when explicit functions are useful.
 - `host`: Required hostname or IP, stored only in the server list.
 - `port`: Defaults to `22`; must be `1..65535`.
 - `username`: Required SSH username.
-- `key_name`: Required key filename or path; the helper does not create the private key during add, but the mandatory software scan for enabled servers requires it to exist and work for SSH.
+- `key_name`: Required key filename or path. If the private key is missing for an enabled server, the helper asks whether to generate it, save the entry disabled, or cancel.
 - `workdir`: Defaults to `ssh.default_workdir`, which is `~/workspace` in the bundled settings.
 - `enabled`: Defaults to `true`.
 - `notes`: Optional free text.
 
-The helper validates schema, rejects duplicate id/name selectors, backs up an existing server list, and writes via temporary file replacement. For enabled servers, it then runs a mandatory read-only software scan and caches the result in `software_scan`. If the scan fails, the server record is kept with `software_scan.status` set to `failed` and the add flow returns a failure code.
+Post-add optional metadata:
+
+- `category`: Optional non-sensitive grouping label used by `choices`; edit the server list after add when a specific category is useful.
+- `functions`: Optional non-sensitive array of capabilities used by `choices`; edit the server list after add when explicit functions are useful.
+
+The helper validates schema, rejects duplicate id/name selectors, backs up an existing server list, and writes via temporary file replacement. For enabled servers, it then runs a mandatory read-only software scan and caches the result in `software_scan`. If the scan fails, the server record is kept with `software_scan.status` set to `failed` and the add or update flow returns a failure code.
+
+Multiple entries may use the same `host` when they represent different SSH usernames, ports, keys, or workdirs. During interactive add, the helper lists existing entries for the same host with username and port visible, asks before adding another login, and defaults to cancelling an exact `host + username + port` duplicate.
 
 ## Software Catalog and Cache
 
@@ -126,13 +159,15 @@ python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server
 python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server <id-or-name> --name vivado
 ```
 
-The bundled catalog scans Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, and Vitis. Vivado and Vitis also scan configured Xilinx install roots such as `/opt/Xilinx`, `/tools/Xilinx`, and `/usr/local/Xilinx`.
+The bundled catalog scans Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, and Vitis. Python, CUDA, GCC/G++, and CMake include common global multi-version paths; Vivado and Vitis scan configured Xilinx install roots such as `/opt/Xilinx`, `/tools/Xilinx`, and `/usr/local/Xilinx`.
 
 Treat `inventory.software_catalog` as trusted local configuration. Its `version_command` and `install_path_command` templates are rendered into a POSIX shell script and executed read-only over SSH, so only reviewed skill or settings files should define them. Do not place untrusted user text into software catalog command templates.
 
-Directory scans must use absolute POSIX `base_dirs` and relative `subdir` / `executable` values. Invalid catalog shapes, duplicate software ids, missing probes, and non-absolute scan roots should fail before SSH execution with a clear settings error.
+`path_scan` defaults to `first` for compatibility. Use `all` only for simple command names when every executable on `PATH` should be reported. `executable_globs` must be absolute POSIX patterns with safe glob characters and are intended for reviewed system paths such as `/usr/bin/gcc-[0-9]*`, `/usr/bin/cmake[0-9]*`, or `/usr/local/cuda-*/bin/nvcc`.
 
-Cached `software_scan.raw_summary` is a local operational artifact. It can include host inventory lines and installation paths, so keep real server lists and scan caches out of public docs and committed files.
+Directory scans must use absolute POSIX `base_dirs` and relative `subdir` / `executable` values. Invalid catalog shapes, duplicate software ids, missing probes, invalid `path_scan` values, unsafe executable globs, and non-absolute scan roots should fail before SSH execution with a clear settings error.
+
+Cached `software_scan.tools.<id>.versions` records every detected install for a tool. The top-level `path`, `version`, and `install_path` remain the first detected install for compatibility, while `software --name <tool>` and the full `software` table expose multi-version entries. Cached `software_scan.raw_summary` is a local operational artifact. It can include host inventory lines and installation paths, so keep real server lists and scan caches out of public docs and committed files.
 
 ## Server List JSON
 
@@ -143,6 +178,10 @@ Resolution priority is:
 1. `--config <server-list.json>`
 2. `--settings <json>` with `paths.default_server_list`
 3. `erie-remote-ssh/config/defaults.json`
+
+Commands that write validation or scan state use the same resolved path. With bundled defaults, `workspace-check`, `scan-software`, `configure`, `add-server`, and `update-server` write `erie-remote-ssh/config/server_list.local.json`. If `--config` or a custom settings file is supplied, they write the resolved override file instead.
+
+`workspace-check` creates a timestamped backup next to the selected server list before writing `validation`, `workspace_check`, or refreshed `software_scan` data. The backup name uses the existing `<server-list-name>.bak.<timestamp>` format, appends a numeric suffix if another backup was created in the same second, and is printed as `backup: <path>`.
 
 The helper parses JSON with UTF-8, requires a root object, rejects unsupported versions, requires `servers` to be an array of objects, and validates each selected server before connecting. Keep real hostnames, usernames, ports, and key names in the server list only.
 
@@ -167,7 +206,19 @@ Use `setup-key` to inspect local key readiness without modifying local or remote
 python <skill-dir>\scripts\remote_ssh.py setup-key --settings <settings> --server <id-or-name>
 ```
 
-It reports whether the private key and matching `.pub` file exist, reminds the operator that only the public key belongs in the remote account's `~/.ssh/authorized_keys`, and keeps default verification aligned with `BatchMode=yes`.
+It reports whether the private key and matching `.pub` file exist, reminds the operator that only the public key belongs in the remote account's `~/.ssh/authorized_keys`, and keeps default verification aligned with `BatchMode=yes`. Passwordless SSH still requires the user to log in to the remote account once using a password, console, existing jump host, or administrator path and append the public key before Codex can verify with `check`.
+
+## Key Generation Guardrail
+
+Guided configuration can generate a local Ed25519 key when an enabled server entry references a missing private key.
+
+- It uses `tools.ssh_keygen`, defaulting to `ssh-keygen`.
+- It resolves relative `key_name` values against `default_key_dir`, normally `~/.ssh`.
+- It prints the target path redacted by default; use `--show-sensitive` only when the user explicitly needs the path or public key content.
+- It refuses to overwrite existing private keys.
+- It asks the user to confirm before writing.
+- It asks whether the passphrase should be empty or custom. Custom passphrases are read with hidden input and are not written to config or logs.
+- It prints public-key installation guidance for the remote `~/.ssh/authorized_keys`; it does not modify the remote account, run `ssh-copy-id`, or skip the first manual login.
 
 ## Automation Entry Points
 
@@ -175,7 +226,7 @@ It reports whether the private key and matching `.pub` file exist, reminds the o
 - Windows PowerShell: `scripts/powershell/config/configure_remote_ssh.ps1`
 - POSIX shell: `scripts/shell/config/configure_remote_ssh.sh`
 
-Both scripts run `discover` first. If no enabled SSH server is configured, they ask whether to start `add-server --interactive`, then run discovery again. They do not generate keys, modify SSH configuration, or scan networks. Enabled server additions connect only for the mandatory read-only software scan.
+These scripts now call `configure --interactive`. The agent must ask the user before launching them, and the CLI requires an explicit manual/script/cancel choice before mutating any server list. Guided configuration may generate a local key only after explicit confirmation, does not install public keys remotely, does not run `ssh-copy-id`, and does not scan networks. Enabled server additions and updates connect only for the mandatory read-only software scan after passwordless SSH is ready.
 
 ## Example
 
@@ -186,11 +237,13 @@ Both scripts run `discover` first. If no enabled SSH server is configured, they 
     "default_server_list": "${skill_dir}/config/server_list.local.json",
     "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
     "requests_dir": "${project_root}/requests",
-    "downloads_dir": "${project_root}/downloads"
+    "downloads_dir": "${project_root}/downloads",
+    "upload_roots": ["${project_root}", "${cwd}"]
   },
   "tools": {
     "ssh_client": "ssh",
     "scp_client": "scp",
+    "ssh_keygen": "ssh-keygen",
     "skill_validator_candidates": [
       "${env:REMOTE_SSH_SKILL_VALIDATOR}",
       "${home}/.codex/skills/.system/skill-creator/scripts/quick_validate.py"
@@ -204,8 +257,10 @@ Both scripts run `discover` first. If no enabled SSH server is configured, they 
 
 Keep sensitive server values in the server list, not in settings documentation.
 
-## Request and Download Directories
+## Request, Download, and Upload Directories
 
 Request files are local audit artifacts. They record operation type, server id, relative paths, reason, risks, and timestamp; they do not store real hostnames, usernames, key names, key paths, or ports.
 
 Downloads are constrained to `paths.downloads_dir`. Use a custom settings file when a workflow needs a different project-local download root.
+
+Uploads are constrained to `paths.upload_roots`. `request-upload` records the matched upload root and a relative path, then `run-request --execute` resolves and validates them again before SCP. This prevents a modified request JSON from pointing outside the configured local roots. Sensitive local sources, including `.codex`, `.ssh`, private-key-like names, `.env`, `known_hosts`, `authorized_keys`, Windows system directories, and common POSIX system directories, require `--confirm-sensitive-local-upload` and a non-empty `--reason` when the request is created and again when it is executed.

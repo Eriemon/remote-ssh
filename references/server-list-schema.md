@@ -27,7 +27,7 @@ Use this reference when reading or extending an Erie Remote SSH server list JSON
 - `inventory_snapshot`: Optional previous inventory record.
 - `validation`: Optional validation metadata.
 - `workspace_check`: Optional workdir validation metadata.
-- `software_scan`: Optional cached software scan written by `scan-software` and by successful enabled-server `add-server --interactive` flows.
+- `software_scan`: Optional cached software scan written by `scan-software`, successful `workspace-check`, and enabled-server `add-server --interactive` or `update-server --interactive` flows.
 
 ## Inventory Snapshot
 
@@ -44,7 +44,7 @@ The helper treats this object as historical context only. It does not write back
 ## Validation Object
 
 - `status`: Common values are `verified`, `failed`, `skipped`, or `unknown`.
-- `method`: Validation method, such as `ssh_key`.
+- `method`: Validation method, such as `ssh_key` or `ssh_workspace`.
 - `verified_at`: Timestamp string when validation succeeded.
 - `last_error`: Last validation error or null.
 
@@ -61,7 +61,7 @@ The helper writes this object after a read-only remote software scan. Treat it a
 - `status`: Common values are `ok`, `failed`, or `skipped`.
 - `scanned_at`: UTC timestamp string for the scan attempt.
 - `catalog_version`: Integer copied from `inventory.catalog_version` in settings.
-- `tools`: Object keyed by configured software id. Each value includes `status`, `path`, `version`, `install_path`, and optional `versions` for multi-install tools.
+- `tools`: Object keyed by configured software id. Each value includes `status`, `path`, `version`, `install_path`, and optional `versions` for multi-install tools. When `versions` exists, it is an array of the same record shape and the top-level fields mirror the first detected install for compatibility.
 - `fpga_devices`: Xilinx PCIe device summaries with `device_id`, `pcie_bdf_mgmt`, and `pcie_bdf_user`.
 - `raw_summary`: Raw read-only scan output for local troubleshooting.
 - `last_error`: Error text when `status` is `failed` or `skipped`.
@@ -71,7 +71,10 @@ The helper writes this object after a read-only remote software scan. Treat it a
 - Keep unknown fields when reading configs.
 - Reject unsupported root `version` values instead of guessing.
 - Reject non-object entries inside `servers[]`.
+- Allow multiple entries with the same `host`; they represent distinct login routes when username, port, key, or workdir differ.
 - Prefer adding optional fields over changing existing v1 field meaning.
 - Missing `category` and `functions` fields are valid. The `choices` command may infer display-only functions from `notes`, `inventory_snapshot.description`, and cached installed tools in `software_scan`; it does not write those inferences back.
 - `scan-software` updates `software_scan`; ordinary `inventory` remains a report and does not update the source JSON.
+- `workspace-check` updates `validation`, `workspace_check`, and `software_scan` after creating a server-list backup.
+- Treat caches with an older `catalog_version` as potentially incomplete for multi-version software; refresh them before answering detailed install-version questions.
 - Do not use server-list fields to widen file-operation write access beyond `workdir` in v1.

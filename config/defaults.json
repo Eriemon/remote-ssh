@@ -4,11 +4,13 @@
     "default_server_list": "${skill_dir}/config/server_list.local.json",
     "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
     "requests_dir": "${project_root}/requests",
-    "downloads_dir": "${project_root}/downloads"
+    "downloads_dir": "${project_root}/downloads",
+    "upload_roots": ["${project_root}"]
   },
   "tools": {
     "ssh_client": "ssh",
     "scp_client": "scp",
+    "ssh_keygen": "ssh-keygen",
     "skill_validator_candidates": [
       "${env:REMOTE_SSH_SKILL_VALIDATOR}",
       "${env:CODEX_HOME}/skills/.system/skill-creator/scripts/quick_validate.py",
@@ -45,11 +47,23 @@
     "max_transfer_bytes": 104857600
   },
   "inventory": {
-    "catalog_version": 1,
+    "catalog_version": 2,
     "software_catalog": [
       {
         "id": "python",
         "commands": ["python3", "python"],
+        "path_scan": "all",
+        "executable_globs": [
+          "/usr/bin/python3",
+          "/usr/bin/python3.[0-9]",
+          "/usr/bin/python3.[0-9][0-9]",
+          "/bin/python3",
+          "/bin/python3.[0-9]",
+          "/bin/python3.[0-9][0-9]",
+          "/usr/local/bin/python3",
+          "/usr/local/bin/python3.[0-9]",
+          "/usr/local/bin/python3.[0-9][0-9]"
+        ],
         "version_command": "{path} --version 2>&1 | head -n 1"
       },
       {
@@ -61,7 +75,9 @@
       {
         "id": "cuda",
         "commands": ["nvcc"],
-        "version_command": "{path} --version 2>&1 | awk '/release/ {print $0; exit}'"
+        "executable_globs": ["/usr/local/cuda-*/bin/nvcc"],
+        "version_command": "{path} --version 2>&1 | awk '/release/ {print $0; exit}'",
+        "install_path_command": "dirname \"$(dirname {path})\""
       },
       {
         "id": "nvidia_driver",
@@ -71,16 +87,27 @@
       {
         "id": "gcc",
         "commands": ["gcc"],
+        "path_scan": "all",
+        "executable_globs": ["/usr/bin/gcc", "/usr/bin/gcc-[0-9]*"],
         "version_command": "{path} --version 2>&1 | head -n 1"
       },
       {
         "id": "gpp",
         "commands": ["g++"],
+        "path_scan": "all",
+        "executable_globs": ["/usr/bin/g++", "/usr/bin/g++-[0-9]*"],
         "version_command": "{path} --version 2>&1 | head -n 1"
       },
       {
         "id": "cmake",
         "commands": ["cmake"],
+        "path_scan": "all",
+        "executable_globs": [
+          "/usr/bin/cmake",
+          "/usr/bin/cmake[0-9]*",
+          "/usr/local/bin/cmake",
+          "/usr/local/bin/cmake[0-9]*"
+        ],
         "version_command": "{path} --version 2>&1 | head -n 1"
       },
       {

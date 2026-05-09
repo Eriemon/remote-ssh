@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import getpass
 import json
 import os
 import re
@@ -76,6 +77,7 @@ def settings_context(settings_path: Path) -> dict[str, str]:
         "skill_dir": str(SKILL_DIR),
         "settings_dir": str(settings_dir),
         "home": str(Path.home()),
+        "cwd": str(Path.cwd()),
     }
 
 
@@ -141,6 +143,10 @@ def scp_client(settings: dict[str, Any]) -> str:
     return str(settings_value(settings, "tools", "scp_client", default="scp") or "scp")
 
 
+def ssh_keygen_client(settings: dict[str, Any]) -> str:
+    return str(settings_value(settings, "tools", "ssh_keygen", default="ssh-keygen") or "ssh-keygen")
+
+
 def ssh_options(settings: dict[str, Any], accept_new_host_key: bool = False) -> list[str]:
     key = "accept_new_host_key_options" if accept_new_host_key else "safe_options"
     configured = settings_value(settings, "ssh", key)
@@ -196,6 +202,21 @@ def software_catalog(settings: dict[str, Any]) -> list[dict[str, Any]]:
             commands = []
         if not isinstance(commands, list) or not all(isinstance(command, str) and command.strip() for command in commands):
             raise RemoteSshError(f"Software catalog {tool_id} commands must be a list of non-empty strings.")
+        path_scan = str(item.get("path_scan", "first")).strip().casefold()
+        if path_scan not in {"first", "all"}:
+            raise RemoteSshError(f"Software catalog {tool_id} path_scan must be either 'first' or 'all'.")
+        executable_globs = item.get("executable_globs", [])
+        if executable_globs is None:
+            executable_globs = []
+        glob_pattern = re.compile(r"^[A-Za-z0-9_./*?\[\]+-]+$")
+        if not isinstance(executable_globs, list) or not all(
+            isinstance(path, str)
+            and path.strip().startswith("/")
+            and ".." not in PurePosixPath(path.strip()).parts
+            and glob_pattern.fullmatch(path.strip())
+            for path in executable_globs
+        ):
+            raise RemoteSshError(f"Software catalog {tool_id} executable_globs must contain absolute POSIX paths with safe glob characters.")
         scans = item.get("directory_scans", [])
         if scans is None:
             scans = []
@@ -211,8 +232,8 @@ def software_catalog(settings: dict[str, Any]) -> list[dict[str, Any]]:
                 value = scan.get(required)
                 if not isinstance(value, str) or not value.strip() or value.startswith("/") or ".." in PurePosixPath(value).parts:
                     raise RemoteSshError(f"Software catalog {tool_id} directory_scans[{scan_index}].{required} is invalid.")
-        if not commands and not scans:
-            raise RemoteSshError(f"Software catalog {tool_id} must define commands or directory_scans.")
+        if not commands and not scans and not executable_globs:
+            raise RemoteSshError(f"Software catalog {tool_id} must define commands, executable_globs, or directory_scans.")
         normalized.append(item)
     return normalized
 
@@ -372,6 +393,10 @@ def backup_file(path: Path) -> Path | None:
         return None
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d%H%M%S")
     backup = path.with_name(f"{path.name}.bak.{timestamp}")
+    suffix = 1
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.bak.{timestamp}.{suffix}")
+        suffix += 1
     shutil.copy2(path, backup)
     return backup
 
@@ -384,6 +409,64 @@ def load_config_for_args(args: argparse.Namespace) -> tuple[dict[str, Any], dict
 
 def get_servers(config: dict[str, Any]) -> list[Server]:
     return [Server(server) for server in config.get("servers", [])]
+
+
+def normalize_host(value: str) -> str:
+    return value.strip().casefold()
+
+
+def parse_endpoint_selector(selector: str) -> tuple[str | None, str, int | None] | None:
+    value = selector.strip()
+    if not value:
+        return None
+    username: str | None = None
+    target = value
+    if "@" in target:
+        username, target = target.rsplit("@", 1)
+        username = username.strip() or None
+    host = target.strip()
+    port: int | None = None
+    if host.startswith("[") and "]" in host:
+        closing = host.find("]")
+        bracketed_host = host[1:closing].strip()
+        suffix = host[closing + 1 :].strip()
+        if suffix.startswith(":") and suffix[1:].isdigit():
+            port = parse_port_value(suffix[1:])
+        elif suffix:
+            return None
+        host = bracketed_host
+    elif host.count(":") == 1:
+        host_part, port_part = host.rsplit(":", 1)
+        if port_part.isdigit():
+            host = host_part.strip()
+            port = parse_port_value(port_part)
+    if not host:
+        return None
+    return username, host, port
+
+
+def server_matches_endpoint(server: Server, username: str | None, host: str, port: int | None) -> bool:
+    if normalize_host(server.host) != normalize_host(host):
+        return False
+    if username is not None and server.username.casefold() != username.casefold():
+        return False
+    if port is not None and server.port != port:
+        return False
+    return True
+
+
+def same_host_servers(config: dict[str, Any], host: str) -> list[Server]:
+    normalized = normalize_host(host)
+    return [server for server in get_servers(config) if normalize_host(server.host) == normalized]
+
+
+def format_ambiguous_selector(selector: str, matches: list[Server]) -> str:
+    labels = ", ".join(server.label for server in matches)
+    return (
+        f"Selector matched multiple servers: {labels}. "
+        "Choose a server id/name or specify a port, for example user@host:port. "
+        "Run choices --host <host> --show-sensitive to inspect login ports."
+    )
 
 
 def select_server(config: dict[str, Any], selector: str, allow_disabled: bool = False) -> Server:
@@ -399,10 +482,14 @@ def select_server(config: dict[str, Any], selector: str, allow_disabled: bool = 
             matches.append(server)
 
     if not matches:
+        endpoint = parse_endpoint_selector(selector)
+        if endpoint is not None:
+            username, host, port = endpoint
+            matches = [server for server in get_servers(config) if server_matches_endpoint(server, username, host, port)]
+    if not matches:
         raise RemoteSshError(f"No server matched selector: {selector}")
     if len(matches) > 1:
-        labels = ", ".join(server.label for server in matches)
-        raise RemoteSshError(f"Selector matched multiple servers: {labels}")
+        raise RemoteSshError(format_ambiguous_selector(selector, matches))
 
     server = matches[0]
     try:
@@ -563,6 +650,8 @@ def run_ssh(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             args,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -781,6 +870,27 @@ def downloads_dir(settings: dict[str, Any]) -> Path:
     return resolve_settings_path(settings, "paths", "downloads_dir", "${project_root}/downloads")
 
 
+def configured_upload_roots(settings: dict[str, Any]) -> list[Path]:
+    configured = settings_value(settings, "paths", "upload_roots", default=["${project_root}"])
+    if not isinstance(configured, list) or not configured:
+        raise RemoteSshError("Settings field paths.upload_roots must be a non-empty list of paths.")
+    roots: list[Path] = []
+    for item in configured:
+        if not isinstance(item, str) or not item.strip():
+            raise RemoteSshError("Settings field paths.upload_roots must contain non-empty path strings.")
+        root = resolve_config_path(item, settings_path(settings), settings["_context"])
+        if root == Path(root.anchor):
+            raise RemoteSshError("Settings field paths.upload_roots must not contain a filesystem root.")
+        try:
+            if root == Path.home().resolve():
+                raise RemoteSshError("Settings field paths.upload_roots must not contain the whole user home directory.")
+        except RuntimeError:
+            pass
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
 def relative_to_project(path: Path) -> str:
     try:
         return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
@@ -799,6 +909,102 @@ def resolve_local_project_path(value: str | Path, must_exist: bool = True) -> Pa
     if must_exist and not path.exists():
         raise RemoteSshError(f"Local path not found: {path}")
     return path
+
+
+def relative_to_upload_root(path: Path, upload_roots: Iterable[Path]) -> tuple[Path, str]:
+    resolved = path.resolve()
+    for root in upload_roots:
+        try:
+            return root, resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    raise RemoteSshError("Local upload path must stay inside configured paths.upload_roots.")
+
+
+def resolve_local_upload_path(settings: dict[str, Any], value: str | Path, must_exist: bool = True) -> tuple[Path, Path, str]:
+    raw = Path(os.path.expandvars(os.path.expanduser(str(value))))
+    candidates = [raw.resolve()] if raw.is_absolute() else [(Path.cwd() / raw).resolve(), (PROJECT_ROOT / raw).resolve()]
+    upload_roots = configured_upload_roots(settings)
+    last_missing: Path | None = None
+    for candidate in candidates:
+        try:
+            root, relative = relative_to_upload_root(candidate, upload_roots)
+        except RemoteSshError:
+            continue
+        if must_exist and not candidate.exists():
+            last_missing = candidate
+            continue
+        return candidate, root, relative
+    if last_missing is not None:
+        raise RemoteSshError(f"Local path not found: {last_missing}")
+    raise RemoteSshError("Local upload path must stay inside configured paths.upload_roots.")
+
+
+def resolve_local_upload_request_path(settings: dict[str, Any], payload: dict[str, Any], must_exist: bool = True) -> tuple[Path, Path, str]:
+    if "local_upload_root" in payload or "local_relative_path" in payload:
+        root_value = str(payload.get("local_upload_root", "")).strip()
+        relative_value = str(payload.get("local_relative_path", "")).strip()
+        if not root_value or not relative_value:
+            raise RemoteSshError("Upload request must include local_upload_root and local_relative_path.")
+        relative = PurePosixPath(relative_value)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise RemoteSshError("Upload request local_relative_path must be a safe relative path.")
+        root = Path(root_value).resolve()
+        configured_roots = configured_upload_roots(settings)
+        if root not in configured_roots:
+            raise RemoteSshError("Local upload path must stay inside configured paths.upload_roots.")
+        path = (root / Path(*relative.parts)).resolve()
+        matched_root, matched_relative = relative_to_upload_root(path, [root])
+        if must_exist and not path.exists():
+            raise RemoteSshError(f"Local path not found: {path}")
+        return path, matched_root, matched_relative
+    return resolve_local_project_path(payload.get("local_project_path", ""), must_exist=must_exist), PROJECT_ROOT.resolve(), str(
+        payload.get("local_project_path", "")
+    )
+
+
+def path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def sensitive_local_upload_reasons(path: Path) -> list[str]:
+    resolved = path.resolve()
+    lowered_parts = [part.casefold() for part in resolved.parts]
+    name = resolved.name.casefold()
+    reasons: list[str] = []
+    if ".codex" in lowered_parts:
+        reasons.append("inside .codex")
+    if ".ssh" in lowered_parts:
+        reasons.append("inside .ssh")
+    if name in {".env", "known_hosts", "authorized_keys"} or name.startswith(".env."):
+        reasons.append("sensitive configuration file")
+    if name in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"} or name.endswith((".pem", ".key", ".ppk")):
+        reasons.append("possible private key")
+    for env_name in ["SystemRoot", "WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"]:
+        value = os.environ.get(env_name)
+        if value and path_is_relative_to(resolved, Path(value)):
+            reasons.append("inside system directory")
+            break
+    for system_path in [Path("/etc"), Path("/bin"), Path("/sbin"), Path("/usr/bin"), Path("/usr/sbin")]:
+        if system_path.exists() and path_is_relative_to(resolved, system_path):
+            reasons.append("inside system directory")
+            break
+    deduped: list[str] = []
+    for reason in reasons:
+        if reason not in deduped:
+            deduped.append(reason)
+    return deduped
+
+
+def require_sensitive_upload_confirmation(reasons: list[str], confirmed: bool, reason: str) -> None:
+    if not reasons:
+        return
+    if not confirmed or not reason.strip():
+        raise RemoteSshError("Sensitive local upload requires --confirm-sensitive-local-upload and --reason.")
 
 
 def resolve_download_target(settings: dict[str, Any], value: str | Path) -> Path:
@@ -844,7 +1050,14 @@ def write_request(settings: dict[str, Any], request: dict[str, Any]) -> Path:
     return path
 
 
-def create_request(settings: dict[str, Any], operation: str, server: Server, payload: dict[str, Any], reason: str = "") -> Path:
+def create_request(
+    settings: dict[str, Any],
+    operation: str,
+    server: Server,
+    payload: dict[str, Any],
+    reason: str = "",
+    risk_summary: list[str] | None = None,
+) -> Path:
     request = {
         "version": 1,
         "request_id": request_id(operation),
@@ -854,7 +1067,9 @@ def create_request(settings: dict[str, Any], operation: str, server: Server, pay
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "payload": payload,
     }
-    if operation == "command":
+    if risk_summary is not None:
+        request["risk_summary"] = risk_summary
+    elif operation == "command":
         request["risk_summary"] = command_risks(str(payload.get("command", "")))
     else:
         request["risk_summary"] = ["modifies remote workdir content"]
@@ -1023,6 +1238,8 @@ def server_choice_record(config: dict[str, Any], server: Server, show_sensitive:
     }
     if show_sensitive:
         record["target"] = user_host(server)
+        record["username"] = server.username
+        record["port"] = server.port
         record["key_path"] = str(expand_key_path(config, server))
     return record
 
@@ -1116,27 +1333,38 @@ def cmd_choices(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     servers = get_servers(config)
     enabled_servers = enabled_ssh_servers(config)
-    if args.all:
+    if args.host:
+        source_servers = servers if args.all else enabled_servers
+        selected = [server for server in source_servers if normalize_host(server.host) == normalize_host(args.host)]
+    elif args.all:
         selected = servers
     elif enabled_servers:
         selected = enabled_servers
     else:
         selected = servers
 
-    status = "available" if enabled_servers else "no_enabled_ssh"
-    exit_code = 0 if enabled_servers else 4
+    if args.host and not selected:
+        status = "no_matching_host"
+        exit_code = 4
+    else:
+        status = "available" if enabled_servers else "no_enabled_ssh"
+        exit_code = 0 if enabled_servers else 4
     records = [server_choice_record(config, server, args.show_sensitive) for server in selected]
     grouped = grouped_choice_records(records)
+    selection_required = bool(args.host and len(records) > 1)
     summary = {
         "status": status,
         "server_list_exists": True,
         "server_list_path": str(config_path) if args.show_sensitive else REDACTED,
         "server_count": len(servers),
         "enabled_ssh_count": len(enabled_servers),
+        "selection_required": selection_required,
         "servers": records,
         "groups": grouped,
         "next_steps": (
-            ["Reply with the server id or name to select a target before any remote access."]
+            ["Reply with the server id or name, or specify user@host:port, before any remote access."]
+            if selection_required
+            else ["Reply with the server id or name to select a target before any remote access."]
             if enabled_servers
             else ["Enable an existing server or run remote_ssh.py add-server --interactive to add an SSH server."]
         ),
@@ -1149,6 +1377,7 @@ def cmd_choices(args: argparse.Namespace) -> int:
     print("server_list_exists: True")
     print(f"server_count: {len(servers)}")
     print(f"enabled_ssh_count: {len(enabled_servers)}")
+    print(f"selection_required: {str(selection_required).lower()}")
     if not records:
         print("No servers found.")
     for category, category_records in grouped.items():
@@ -1169,6 +1398,8 @@ def cmd_choices(args: argparse.Namespace) -> int:
             print(f"  software: {'; '.join(software) if software else 'not scanned or not detected'}")
             if args.show_sensitive:
                 print(f"  target: {record.get('target', '')}")
+                print(f"  username: {record.get('username', '')}")
+                print(f"  port: {record.get('port', '')}")
                 print(f"  key_path: {record.get('key_path', '')}")
     for step in summary["next_steps"]:
         print(f"next: {step[:1].lower() + step[1:] if step else step}")
@@ -1221,6 +1452,35 @@ def prompt_bool(label: str, default: bool = True) -> bool:
         print("Enter yes or no.", file=sys.stderr)
 
 
+def prompt_choice(label: str, choices: list[str], default: str | None = None) -> str:
+    if default is not None and default not in choices:
+        raise RemoteSshError(f"Invalid default choice {default!r} for {label}.")
+    suffix = "/".join(choices)
+    while True:
+        default_text = f"; default {default}" if default is not None else ""
+        value = input(f"{label} [{suffix}{default_text}]: ").strip().casefold()
+        if not value:
+            if default is not None:
+                return default
+            print(f"Enter one of: {', '.join(choices)}.", file=sys.stderr)
+            continue
+        matches = [choice for choice in choices if choice.startswith(value)]
+        if len(matches) == 1:
+            return matches[0]
+        print(f"Enter one of: {', '.join(choices)}.", file=sys.stderr)
+
+
+def prompt_passphrase() -> str:
+    mode = prompt_choice("key_passphrase", ["empty", "custom"], "empty")
+    if mode == "empty":
+        return ""
+    first = getpass.getpass("passphrase: ")
+    second = getpass.getpass("confirm_passphrase: ")
+    if first != second:
+        raise RemoteSshError("Passphrases did not match.")
+    return first
+
+
 def parse_port_value(value: str) -> int:
     try:
         port = int(value)
@@ -1244,6 +1504,111 @@ def add_server_record(config: dict[str, Any], record: dict[str, Any]) -> None:
     config.setdefault("servers", []).append(record)
 
 
+def validate_updated_server_record(config: dict[str, Any], record: dict[str, Any], original_id: str) -> None:
+    candidate = Server(record)
+    errors = validate_server_shape(config, candidate, require_key_file=False)
+    if errors:
+        raise RemoteSshError("Invalid server record: " + "; ".join(errors))
+    name = candidate.name.casefold()
+    for server in get_servers(config):
+        if server.id == original_id:
+            continue
+        existing = {server.id.casefold(), server.name.casefold(), server.legacy_server_id.casefold()}
+        if name in existing:
+            raise RemoteSshError(f"Server name already exists: {candidate.name}")
+
+
+def print_existing_host_logins(existing: list[Server]) -> None:
+    print(f"matching_host_count: {len(existing)}")
+    for server in existing:
+        print(f"existing: {server.label}")
+        print(f"  name: {server.name}")
+        print(f"  username: {server.username}")
+        print(f"  port: {server.port}")
+        print(f"  enabled: {server.enabled}")
+
+
+def print_public_key_guidance(config: dict[str, Any], server: Server, public_key_path: Path, show_sensitive: bool = False) -> None:
+    if show_sensitive:
+        print(f"public_key_path: {public_key_path}")
+        if public_key_path.exists():
+            print(f"public_key_content: {public_key_path.read_text(encoding='utf-8').strip()}")
+    else:
+        print(f"public_key_path: {REDACTED}")
+    print("manual_login_required: true")
+    print("next: log in to the remote account once using a password, console, existing jump host, or administrator path.")
+    print("next: append the public key content to the remote account's ~/.ssh/authorized_keys.")
+    print("next: run setup-key, check, then exec -- echo ok after the remote authorized_keys update.")
+
+
+def generate_ssh_key_for_server(
+    config: dict[str, Any],
+    settings: dict[str, Any],
+    server: Server,
+    show_sensitive: bool = False,
+) -> bool:
+    key_path = expand_key_path(config, server)
+    public_key_path = expand_public_key_path(config, server)
+    if key_path.exists():
+        raise RemoteSshError("Refusing to overwrite an existing private key.")
+    print(f"key_generation_target: {key_path if show_sensitive else REDACTED}")
+    if not prompt_bool("generate SSH key at this path", False):
+        print("key_generation: cancelled")
+        return False
+    passphrase = prompt_passphrase()
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ssh_keygen_client(settings),
+        "-t",
+        "ed25519",
+        "-f",
+        str(key_path),
+        "-C",
+        f"{server.username}@{server.host}",
+        "-N",
+        passphrase,
+    ]
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise RemoteSshError(f"SSH key generator '{command[0]}' was not found on PATH.") from exc
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr)
+        if summary:
+            print(redact_text(config, summary), file=sys.stderr)
+        raise RemoteSshError("SSH key generation failed.")
+    print("key_generation: created")
+    print_public_key_guidance(config, server, public_key_path, show_sensitive)
+    return True
+
+
+def resolve_missing_private_key_for_record(
+    config: dict[str, Any],
+    settings: dict[str, Any],
+    record: dict[str, Any],
+    show_sensitive: bool = False,
+) -> int | None:
+    server = Server(record)
+    key_path = expand_key_path(config, server)
+    if key_path.exists() or not server.enabled:
+        return None
+    print("key_status: missing_private_key")
+    print(f"private_key: {key_path if show_sensitive else REDACTED}")
+    action = prompt_choice("missing_key_action", ["generate", "disable", "cancel"], "disable")
+    if action == "generate":
+        if not generate_ssh_key_for_server(config, settings, server, show_sensitive):
+            return 3
+        return None
+    if action == "disable":
+        record["enabled"] = False
+        print("key_generation: skipped")
+        print("server_enabled: false")
+        print("next: generate or place the private key, then update and enable this server.")
+        return None
+    print("configuration_status: cancelled")
+    return 3
+
+
 def cmd_add_server(args: argparse.Namespace) -> int:
     if not args.interactive:
         raise RemoteSshError("add-server currently requires --interactive.")
@@ -1257,6 +1622,25 @@ def cmd_add_server(args: argparse.Namespace) -> int:
     host = prompt_value("host", required=True)
     port = parse_port_value(prompt_value("port", "22", required=True))
     username = prompt_value("username", required=True)
+    existing_logins = same_host_servers(config, host)
+    duplicate_logins = [
+        server
+        for server in existing_logins
+        if server.username.casefold() == username.casefold() and server.port == port
+    ]
+    if existing_logins:
+        print_existing_host_logins(existing_logins)
+    if duplicate_logins:
+        print("duplicate_login: true")
+        if not prompt_bool("add another entry with the same host, username, and port", False):
+            print("add_server_status: cancelled")
+            print("next: choose the existing server id/name or enter a different username or port.")
+            return 3
+    elif existing_logins:
+        if not prompt_bool("add another login for this host", True):
+            print("add_server_status: cancelled")
+            print("next: choose an existing server id/name or enter a different host.")
+            return 3
     key_name = prompt_value("key_name", required=True)
     workdir = prompt_value("workdir", default_workdir(settings), required=True)
     enabled = prompt_bool("enabled", True)
@@ -1275,6 +1659,10 @@ def cmd_add_server(args: argparse.Namespace) -> int:
     }
     if notes:
         record["notes"] = notes
+
+    key_resolution = resolve_missing_private_key_for_record(config, settings, record, getattr(args, "show_sensitive", False))
+    if key_resolution is not None:
+        return key_resolution
 
     add_server_record(config, record)
     backup = backup_file(config_path)
@@ -1323,6 +1711,166 @@ def cmd_add_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update_server(args: argparse.Namespace) -> int:
+    if not args.interactive:
+        raise RemoteSshError("update-server currently requires --interactive.")
+    config, settings, config_path = load_config_for_args(args)
+    current = select_server(config, args.server, allow_disabled=True)
+    record = dict(current.raw)
+
+    record["name"] = prompt_value("name", current.name, required=True)
+    record["host"] = prompt_value("host", current.host, required=True)
+    record["port"] = parse_port_value(prompt_value("port", str(current.port), required=True))
+    record["username"] = prompt_value("username", current.username, required=True)
+    record["key_name"] = prompt_value("key_name", current.key_name, required=True)
+    record["workdir"] = prompt_value("workdir", current.workdir, required=True)
+    record["enabled"] = prompt_bool("enabled", current.enabled)
+    notes_default = str(current.raw.get("notes", ""))
+    notes = prompt_value("notes", notes_default)
+    if notes:
+        record["notes"] = notes
+    else:
+        record.pop("notes", None)
+
+    if any(record.get(field) != current.raw.get(field) for field in ["host", "port", "username", "key_name", "workdir"]):
+        record.pop("validation", None)
+        record.pop("workspace_check", None)
+        record.pop("software_scan", None)
+
+    key_resolution = resolve_missing_private_key_for_record(config, settings, record, getattr(args, "show_sensitive", False))
+    if key_resolution is not None:
+        return key_resolution
+
+    validate_updated_server_record(config, record, current.id)
+    for index, server in enumerate(config.get("servers", [])):
+        if isinstance(server, dict) and str(server.get("id", "")) == current.id:
+            config["servers"][index] = record
+            break
+    else:
+        raise RemoteSshError(f"Server disappeared before update: {current.label}")
+
+    backup = backup_file(config_path)
+    write_json_atomic(config_path, config)
+    refreshed = load_config(config_path)
+    server = select_server(refreshed, current.id, allow_disabled=True)
+    if not server.enabled:
+        snapshot = {
+            "status": "skipped",
+            "scanned_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "catalog_version": software_catalog_version(settings),
+            "tools": {},
+            "fpga_devices": [],
+            "raw_summary": "",
+            "last_error": "Server was updated disabled, so software scan was skipped.",
+        }
+        cache_software_snapshot(config_path, refreshed, server, snapshot)
+        print(f"updated: {server.id}")
+        print("software_scan_status: skipped")
+        if backup:
+            print(f"backup: {backup}")
+        return 0
+
+    scan_args = argparse.Namespace(
+        settings=args.settings,
+        config=args.config,
+        server=server.id,
+        allow_disabled=False,
+        accept_new_host_key=False,
+        timeout=None,
+    )
+    scan_rc = cmd_scan_software(scan_args)
+    if scan_rc != 0:
+        print(f"server_record_saved: {server.id}")
+        if backup:
+            print(f"backup: {backup}")
+        print("software_scan_required: failed")
+        return scan_rc
+    print(f"updated: {server.id}")
+    if backup:
+        print(f"backup: {backup}")
+    return 0
+
+
+def print_manual_configuration(config_path: Path) -> None:
+    print("configuration_mode: manual")
+    print(f"manual: create or edit the server list at {config_path}")
+    print("manual: run init-config if the file does not exist.")
+    print("manual: add or update a server entry with host, port, username, key_name, workdir, and enabled.")
+    print("manual: install the public key by logging in to the remote account once and updating ~/.ssh/authorized_keys.")
+    print("manual: run setup-key, check, then scan-software after key material is ready.")
+
+
+def cmd_configure(args: argparse.Namespace) -> int:
+    if not args.interactive:
+        raise RemoteSshError("configure currently requires --interactive.")
+    settings = load_settings(args.settings)
+    config_path = resolve_server_list_path(settings, args.config)
+    summary, _ = discover_summary(settings, config_path)
+    print(f"status: {summary['status']}")
+    mode = prompt_choice("configuration_mode", ["script", "manual", "cancel"])
+    if mode == "manual":
+        print_manual_configuration(config_path)
+        return 0
+    print(f"configuration_mode: {mode}")
+    if mode == "cancel":
+        print("configuration_status: cancelled")
+        return 3
+
+    if not config_path.exists():
+        write_json_atomic(config_path, empty_config())
+        print(f"created: {config_path}")
+    config = load_config(config_path)
+    if args.server:
+        return cmd_update_server(
+            argparse.Namespace(
+                settings=args.settings,
+                config=args.config,
+                server=args.server,
+                interactive=True,
+                show_sensitive=args.show_sensitive,
+            )
+        )
+
+    servers = get_servers(config)
+    if not servers:
+        return cmd_add_server(
+            argparse.Namespace(
+                settings=args.settings,
+                config=args.config,
+                interactive=True,
+                show_sensitive=args.show_sensitive,
+            )
+        )
+
+    print("configured_servers:")
+    for server in servers:
+        print(f"- {server.label}: {server.name} enabled={str(server.enabled).lower()}")
+    action = prompt_choice("configuration_action", ["add", "update", "cancel"])
+    if action == "cancel":
+        print("configuration_status: cancelled")
+        return 3
+    if action == "add":
+        return cmd_add_server(
+            argparse.Namespace(
+                settings=args.settings,
+                config=args.config,
+                interactive=True,
+                show_sensitive=args.show_sensitive,
+            )
+        )
+
+    selector = prompt_value("server", required=True)
+    return cmd_update_server(
+        argparse.Namespace(
+            settings=args.settings,
+            config=args.config,
+            server=selector,
+            interactive=True,
+            show_sensitive=args.show_sensitive,
+        )
+    )
+
+
 def cmd_setup_key(args: argparse.Namespace) -> int:
     config, settings, _ = load_config_for_args(args)
     server = select_server(config, args.server, getattr(args, "allow_disabled", False))
@@ -1345,7 +1893,9 @@ def cmd_setup_key(args: argparse.Namespace) -> int:
     print(f"public_key_exists: {str(public_exists).lower()}")
     print(f"default_workdir: {REDACTED}")
     print(f"batch_mode_check: {'BatchMode=yes' if batch_mode else 'BatchMode not configured'}")
+    print("manual_login_required: true")
     print("next: keep the private key local and install only the public key in the remote account's ~/.ssh/authorized_keys.")
+    print("next: log in to the remote account once using a password, console, existing jump host, or administrator path to append the public key.")
     print("next: run check, then exec with a short command such as echo ok to verify passwordless SSH.")
     if not private_exists:
         print("next: create or place the private key outside this helper, then update key_name or default_key_dir.")
@@ -1365,19 +1915,122 @@ def prepare_server_for_remote(args: argparse.Namespace) -> tuple[dict[str, Any],
     return config, settings, server
 
 
-def cmd_workspace_check(args: argparse.Namespace) -> int:
-    config, settings, server = prepare_server_for_remote(args)
-    result = run_ssh(build_ssh_args(config, settings, server, "pwd && test -d . && test -x ."), args.timeout or default_timeout(settings))
+def utc_timestamp() -> str:
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def update_server_status_cache(
+    config_path: Path,
+    config: dict[str, Any],
+    server: Server,
+    validation: dict[str, Any],
+    workspace_check: dict[str, Any],
+) -> None:
+    selector = server.id.casefold()
+    for record in config.get("servers", []):
+        if isinstance(record, dict) and str(record.get("id", "")).casefold() == selector:
+            record["validation"] = validation
+            record["workspace_check"] = workspace_check
+            write_json_atomic(config_path, config)
+            return
+    raise RemoteSshError(f"Cannot update validation cache; server not found: {server.label}")
+
+
+def run_workspace_probe(config: dict[str, Any], settings: dict[str, Any], server: Server, timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_ssh(build_ssh_args(config, settings, server, "pwd && test -d . && test -x ."), timeout)
+
+
+def print_workspace_probe_result(config: dict[str, Any], server: Server, result: subprocess.CompletedProcess[str]) -> int:
     print(f"server: {server.label}")
     print(f"workdir: {REDACTED}")
     if result.returncode != 0:
         summary = summarize_error(result.stderr)
         if summary:
-            print(summary, file=sys.stderr)
+            print(redact_text(config, summary), file=sys.stderr)
         print("status: failed")
         return result.returncode
     print("status: ok")
     return 0
+
+
+def cmd_workspace_check(args: argparse.Namespace) -> int:
+    config, settings, config_path = load_config_for_args(args)
+    server = select_server(config, args.server, getattr(args, "allow_disabled", False))
+    errors = validate_server(config, server)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        raise RemoteSshError("Server local precheck failed.")
+
+    backup = backup_file(config_path)
+    timeout = args.timeout or default_timeout(settings)
+    result = run_workspace_probe(config, settings, server, timeout)
+    print(f"server: {server.label}")
+    print(f"workdir: {REDACTED}")
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr)
+        if summary:
+            print(redact_text(config, summary), file=sys.stderr)
+        timestamp = utc_timestamp()
+        message = redact_text(config, summary or f"SSH command failed with exit code {result.returncode}.")
+        update_server_status_cache(
+            config_path,
+            config,
+            server,
+            {
+                "status": "failed",
+                "method": "ssh_workspace",
+                "verified_at": None,
+                "last_error": message,
+            },
+            {
+                "status": "failed",
+                "checked_at": timestamp,
+                "message": message,
+            },
+        )
+        print("status: failed")
+        if backup:
+            print(f"backup: {backup}")
+        return result.returncode
+    timestamp = utc_timestamp()
+    update_server_status_cache(
+        config_path,
+        config,
+        server,
+        {
+            "status": "verified",
+            "method": "ssh_workspace",
+            "verified_at": timestamp,
+            "last_error": None,
+        },
+        {
+            "status": "ok",
+            "checked_at": timestamp,
+            "message": f"The working directory can be accessed: {server.workdir}",
+        },
+    )
+    print("status: ok")
+    if backup:
+        print(f"backup: {backup}")
+
+    refreshed = load_config(config_path)
+    refreshed_server = select_server(refreshed, server.id, allow_disabled=False)
+    scan_args = argparse.Namespace(
+        timeout=timeout,
+        accept_new_host_key=False,
+    )
+    scan_result, inventory = run_software_scan(refreshed, settings, refreshed_server, scan_args)
+    if scan_result.returncode != 0:
+        summary = summarize_error(scan_result.stderr) or f"SSH command failed with exit code {scan_result.returncode}."
+        snapshot = failed_software_snapshot(settings, redact_text(refreshed, summary))
+        cache_software_snapshot(config_path, refreshed, refreshed_server, snapshot)
+        print(redact_text(refreshed, summary), file=sys.stderr)
+        print_software_snapshot(refreshed_server, snapshot)
+        return scan_result.returncode
+    snapshot = software_snapshot_from_inventory(settings, inventory, scan_result.stdout)
+    cache_software_snapshot(config_path, refreshed, refreshed_server, snapshot)
+    return print_software_snapshot(refreshed_server, snapshot)
 
 
 def cmd_file_list(args: argparse.Namespace) -> int:
@@ -1429,18 +2082,25 @@ def cmd_file_download(args: argparse.Namespace) -> int:
 
 def cmd_request_upload(args: argparse.Namespace) -> int:
     config, settings, server = prepare_server_for_remote(args)
-    local_source = resolve_local_project_path(args.local, must_exist=True)
+    local_source, upload_root, local_relative_path = resolve_local_upload_path(settings, args.local, must_exist=True)
+    sensitive_reasons = sensitive_local_upload_reasons(local_source)
+    reason = args.reason or ""
+    require_sensitive_upload_confirmation(sensitive_reasons, bool(args.confirm_sensitive_local_upload), reason)
     remote_path = remote_relative_path(args.remote, allow_dot=False)
+    risks = ["modifies remote workdir content"]
+    risks.extend(f"sensitive local upload: {item}" for item in sensitive_reasons)
     path = create_request(
         settings,
         "upload",
         server,
         {
-            "local_project_path": relative_to_project(local_source),
+            "local_upload_root": upload_root.as_posix(),
+            "local_relative_path": local_relative_path,
             "remote_path": remote_path,
             "recursive": local_source.is_dir(),
         },
-        reason=args.reason or "",
+        reason=reason,
+        risk_summary=risks,
     )
     print_request_created(path, load_request(path))
     return 0
@@ -1506,18 +2166,27 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     operation = str(request["operation"])
     payload = request["payload"]
     timeout = args.timeout or default_timeout(settings)
+    upload_local_source: Path | None = None
     print(f"request_id: {request.get('request_id')}")
     print(f"operation: {operation}")
     print(f"server: {server.label}")
     for risk in request.get("risk_summary", []):
         print(f"risk: {risk}")
 
-    workspace_rc = cmd_workspace_check(argparse.Namespace(settings=args.settings, config=args.config, server=server.id, allow_disabled=False, timeout=timeout))
+    if operation == "upload":
+        upload_local_source, _, _ = resolve_local_upload_request_path(settings, payload, must_exist=True)
+        sensitive_reasons = sensitive_local_upload_reasons(upload_local_source)
+        require_sensitive_upload_confirmation(sensitive_reasons, bool(args.confirm_sensitive_local_upload), str(request.get("reason", "")))
+
+    workspace_result = run_workspace_probe(config, settings, server, timeout)
+    workspace_rc = print_workspace_probe_result(config, server, workspace_result)
     if workspace_rc != 0:
         return workspace_rc
 
     if operation == "upload":
-        local_source = resolve_local_project_path(payload.get("local_project_path", ""), must_exist=True)
+        local_source = upload_local_source
+        if local_source is None:
+            local_source, _, _ = resolve_local_upload_request_path(settings, payload, must_exist=True)
         remote_path = remote_relative_path(str(payload.get("remote_path", "")), allow_dot=False)
         parent = posix_dirname(remote_path) or "."
         parent_info = resolve_remote_path(config, settings, server, parent, allow_missing=False)
@@ -1579,6 +2248,33 @@ def build_software_scan_script(settings: dict[str, Any]) -> str:
         "clean_value() { printf '%s' \"${1:-}\" | tr '\\n\\r:' '   '; }",
         "emit_software() { printf 'software:%s:%s:%s:%s:%s\\n' \"$(clean_value \"$1\")\" \"$(clean_value \"$2\")\" \"$(clean_value \"$3\")\" \"$(clean_value \"$4\")\" \"$(clean_value \"$5\")\"; }",
         "command_or_empty() { command -v \"$1\" >/dev/null 2>&1 && \"$@\" 2>/dev/null || true; }",
+        "scan_command_paths() {",
+        "  scan_name=\"$1\"",
+        "  if [ \"${scan_name#*/}\" != \"$scan_name\" ]; then",
+        "    if [ -x \"$scan_name\" ] && [ ! -d \"$scan_name\" ]; then printf '%s\\n' \"$scan_name\"; fi",
+        "    return 0",
+        "  fi",
+        "  old_ifs=$IFS",
+        "  IFS=:",
+        "  for scan_dir in ${PATH:-}; do",
+        "    if [ -z \"$scan_dir\" ]; then scan_dir=.; fi",
+        "    scan_candidate=\"$scan_dir/$scan_name\"",
+        "    if [ -x \"$scan_candidate\" ] && [ ! -d \"$scan_candidate\" ]; then printf '%s\\n' \"$scan_candidate\"; fi",
+        "  done",
+        "  IFS=$old_ifs",
+        "}",
+        "remember_tool_path() {",
+        "  tool_key=\"$1\"",
+        "  if command -v readlink >/dev/null 2>&1; then",
+        "    resolved_tool_key=\"$(readlink -f \"$1\" 2>/dev/null || true)\"",
+        "    if [ -n \"$resolved_tool_key\" ]; then tool_key=\"$resolved_tool_key\"; fi",
+        "  fi",
+        "  case \"${seen_tool_paths}\" in",
+        "    *\"|$tool_key|\"*) return 1 ;;",
+        "  esac",
+        "  seen_tool_paths=\"${seen_tool_paths}|$tool_key|\"",
+        "  return 0",
+        "}",
         "field hostname \"$(hostname 2>/dev/null || true)\"",
         "field kernel \"$(uname -srmo 2>/dev/null || true)\"",
         "if command -v lscpu >/dev/null 2>&1; then",
@@ -1609,25 +2305,61 @@ def build_software_scan_script(settings: dict[str, Any]) -> str:
         tool_id = str(item["id"]).strip()
         found_var = f"found_tool_{tool_id.replace('-', '_').replace('.', '_')}"
         lines.append(f"{found_var}=0")
+        lines.append("seen_tool_paths=\"\"")
         commands = [str(command).strip() for command in item.get("commands", [])]
         if commands:
-            lines.append("tool_path=\"\"")
-            for command in commands:
-                quoted = shell_literal(command)
-                lines.append(f"if [ -z \"$tool_path\" ] && command -v {quoted} >/dev/null 2>&1; then tool_path=\"$(command -v {quoted})\"; fi")
-            lines.append("if [ -n \"$tool_path\" ]; then")
             version_template = str(item.get("version_command") or "{path} --version 2>&1 | head -n 1")
             install_template = str(item.get("install_path_command") or "")
             version_command = render_scan_command(version_template, '"$tool_path"')
-            lines.append(f"  tool_version=\"$({version_command} 2>/dev/null | head -n 1 || true)\"")
-            if install_template:
-                install_command = render_scan_command(install_template, '"$tool_path"')
-                lines.append(f"  install_path=\"$({install_command} 2>/dev/null | head -n 1 || true)\"")
+            path_scan = str(item.get("path_scan", "first")).strip().casefold()
+            if path_scan == "first":
+                lines.append("tool_path=\"\"")
+                for command in commands:
+                    quoted = shell_literal(command)
+                    lines.append(f"if [ -z \"$tool_path\" ] && command -v {quoted} >/dev/null 2>&1; then tool_path=\"$(command -v {quoted})\"; fi")
+                lines.append("if [ -n \"$tool_path\" ] && remember_tool_path \"$tool_path\"; then")
             else:
-                lines.append("  install_path=\"\"")
-            lines.append(f"  emit_software {shell_literal(tool_id)} installed \"$tool_path\" \"$tool_version\" \"$install_path\"")
-            lines.append(f"  {found_var}=1")
-            lines.append("fi")
+                for command in commands:
+                    quoted = shell_literal(command)
+                    lines.append(f"for tool_path in $(scan_command_paths {quoted}); do")
+                    lines.append("  if ! remember_tool_path \"$tool_path\"; then continue; fi")
+                    lines.append(f"  tool_version=\"$({version_command} 2>/dev/null | head -n 1 || true)\"")
+                    if install_template:
+                        install_command = render_scan_command(install_template, '"$tool_path"')
+                        lines.append(f"  install_path=\"$({install_command} 2>/dev/null | head -n 1 || true)\"")
+                    else:
+                        lines.append("  install_path=\"\"")
+                    lines.append(f"  emit_software {shell_literal(tool_id)} installed \"$tool_path\" \"$tool_version\" \"$install_path\"")
+                    lines.append(f"  {found_var}=1")
+                    lines.append("done")
+            if path_scan == "first":
+                lines.append(f"  tool_version=\"$({version_command} 2>/dev/null | head -n 1 || true)\"")
+                if install_template:
+                    install_command = render_scan_command(install_template, '"$tool_path"')
+                    lines.append(f"  install_path=\"$({install_command} 2>/dev/null | head -n 1 || true)\"")
+                else:
+                    lines.append("  install_path=\"\"")
+                lines.append(f"  emit_software {shell_literal(tool_id)} installed \"$tool_path\" \"$tool_version\" \"$install_path\"")
+                lines.append(f"  {found_var}=1")
+                lines.append("fi")
+        executable_globs = [str(path).strip() for path in item.get("executable_globs", []) or []]
+        if executable_globs:
+            version_template = str(item.get("version_command") or "{path} --version 2>&1 | head -n 1")
+            install_template = str(item.get("install_path_command") or "")
+            version_command = render_scan_command(version_template, '"$tool_path"')
+            for glob_path in executable_globs:
+                lines.append(f"for tool_path in {glob_path}; do")
+                lines.append("  if [ ! -e \"$tool_path\" ] || [ ! -x \"$tool_path\" ] || [ -d \"$tool_path\" ]; then continue; fi")
+                lines.append("  if ! remember_tool_path \"$tool_path\"; then continue; fi")
+                lines.append(f"  tool_version=\"$({version_command} 2>/dev/null | head -n 1 || true)\"")
+                if install_template:
+                    install_command = render_scan_command(install_template, '"$tool_path"')
+                    lines.append(f"  install_path=\"$({install_command} 2>/dev/null | head -n 1 || true)\"")
+                else:
+                    lines.append("  install_path=\"\"")
+                lines.append(f"  emit_software {shell_literal(tool_id)} installed \"$tool_path\" \"$tool_version\" \"$install_path\"")
+                lines.append(f"  {found_var}=1")
+                lines.append("done")
         for scan in item.get("directory_scans", []) or []:
             subdir = str(scan["subdir"]).strip().strip("/")
             executable = str(scan["executable"]).strip().strip("/")
@@ -1878,6 +2610,17 @@ def print_software_snapshot(server: Server, snapshot: dict[str, Any], name: str 
     print("name\tstatus\tpath\tversion\tinstall_path")
     for key in sorted(tools):
         tool = tools.get(key) or {}
+        versions = tool.get("versions", [])
+        if isinstance(versions, list) and len(versions) > 1:
+            for version in versions:
+                if isinstance(version, dict):
+                    print(
+                        f"{key}\t{version.get('status', 'not_detected')}"
+                        f"\t{version.get('path', '')}"
+                        f"\t{version.get('version', '')}"
+                        f"\t{version.get('install_path', '')}"
+                    )
+            continue
         print(f"{key}\t{tool.get('status', 'not_detected')}\t{tool.get('path', '')}\t{tool.get('version', '')}\t{tool.get('install_path', '')}")
     return 0 if status == "ok" else 3
 
@@ -2001,8 +2744,9 @@ def build_parser() -> argparse.ArgumentParser:
     choices_parser = subparsers.add_parser("choices", help="Show selectable servers grouped by category and function.")
     add_common(choices_parser, include_server=False)
     choices_parser.add_argument("--all", action="store_true", help="Include disabled servers.")
+    choices_parser.add_argument("--host", help="Filter choices to one SSH host or IP without connecting.")
     choices_parser.add_argument("--json", action="store_true", help="Print a machine-readable grouped server choice summary.")
-    choices_parser.add_argument("--show-sensitive", action="store_true", help="Show full target and key path.")
+    choices_parser.add_argument("--show-sensitive", action="store_true", help="Show full target, username, port, and key path.")
     choices_parser.set_defaults(func=cmd_choices)
 
     init_parser = subparsers.add_parser("init-config", help="Create an empty v1 server list if needed.")
@@ -2010,10 +2754,24 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--force", action="store_true", help="Overwrite an existing server list after creating a backup.")
     init_parser.set_defaults(func=cmd_init_config)
 
+    configure_parser = subparsers.add_parser("configure", help="Choose manual or guided SSH server configuration.")
+    add_common(configure_parser, include_server=False)
+    configure_parser.add_argument("--interactive", action="store_true", help="Prompt for configuration mode and fields.")
+    configure_parser.add_argument("--server", help="Existing server id/name to update in guided mode.")
+    configure_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
+    configure_parser.set_defaults(func=cmd_configure)
+
     add_server_parser = subparsers.add_parser("add-server", help="Add a server entry to the configured server list.")
     add_common(add_server_parser, include_server=False)
     add_server_parser.add_argument("--interactive", action="store_true", help="Prompt for server fields and write the server list.")
+    add_server_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
     add_server_parser.set_defaults(func=cmd_add_server)
+
+    update_server_parser = subparsers.add_parser("update-server", help="Update one configured SSH server entry.")
+    add_common(update_server_parser)
+    update_server_parser.add_argument("--interactive", action="store_true", help="Prompt for new values using the existing server as defaults.")
+    update_server_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
+    update_server_parser.set_defaults(func=cmd_update_server)
 
     setup_key_parser = subparsers.add_parser("setup-key", help="Check local key files and print passwordless SSH setup guidance.")
     add_common(setup_key_parser)
@@ -2043,9 +2801,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     request_upload_parser = subparsers.add_parser("request-upload", help="Create an upload request.")
     add_common(request_upload_parser)
-    request_upload_parser.add_argument("--local", required=True, help="Local source path inside project root.")
+    request_upload_parser.add_argument("--local", required=True, help="Local source path inside configured paths.upload_roots.")
     request_upload_parser.add_argument("--remote", required=True, help="Relative remote target inside server workdir.")
     request_upload_parser.add_argument("--reason", help="Reason for the upload request.")
+    request_upload_parser.add_argument(
+        "--confirm-sensitive-local-upload",
+        action="store_true",
+        help="Confirm that a sensitive local source path may be uploaded.",
+    )
     request_upload_parser.set_defaults(func=cmd_request_upload)
 
     request_mkdir_parser = subparsers.add_parser("request-mkdir", help="Create a remote mkdir request.")
@@ -2072,6 +2835,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_request_parser.add_argument("--request", required=True, type=Path, help="Request JSON path.")
     run_request_parser.add_argument("--execute", action="store_true", help="Required explicit execution gate.")
     run_request_parser.add_argument("--timeout", type=positive_int, help="SSH/SCP timeout in seconds. Defaults to settings.")
+    run_request_parser.add_argument(
+        "--confirm-sensitive-local-upload",
+        action="store_true",
+        help="Confirm execution of an upload request with a sensitive local source path.",
+    )
     run_request_parser.set_defaults(func=cmd_run_request)
 
     list_parser = subparsers.add_parser("list", help="List configured servers.")

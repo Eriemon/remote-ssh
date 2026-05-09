@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-1f6feb"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2f81f7"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.0-7c3aed">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.5-7c3aed">
   <a href="SKILL.md"><img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-16a34a"></a>
   <a href="references/review-checklist.md"><img alt="Safety" src="https://img.shields.io/badge/default-redacted-f59e0b"></a>
 </p>
@@ -34,11 +34,11 @@ Remote SSH work has sharp edges: credentials, hostnames, key paths, write bounda
 
 Use it when an agent needs to work on:
 
-- SSH target discovery, server-list validation, and target selection.
+- SSH target discovery, guided configuration, server-list validation, and target selection.
 - Passwordless/key-based SSH readiness checks without modifying `~/.ssh`.
 - Remote `~/workspace` validation and bounded file operations.
 - Reviewed command, upload, mkdir, and delete requests.
-- Cached software availability checks for Python, Conda, CUDA, GCC/G++, CMake, Vivado, and Vitis.
+- Cached software availability checks for Python, Conda, CUDA, GCC/G++, CMake, Vivado, and Vitis, including multi-version scan results.
 - Read-only remote inventory for development, FPGA, GPU, and application-test environments.
 
 ## Skill Architecture
@@ -97,6 +97,7 @@ Inspect the CLI:
 python .\scripts\remote_ssh.py --help
 python .\scripts\remote_ssh.py discover --help
 python .\scripts\remote_ssh.py list --help
+python .\scripts\remote_ssh.py configure --help
 ```
 
 Create a private server list from the non-sensitive template, or keep it outside the repository and pass it with `--config`:
@@ -108,6 +109,10 @@ python .\scripts\remote_ssh.py choices
 ```
 
 `config/server_list.template.json` is only a placeholder. Real hostnames, usernames, ports, key names, key paths, inventory snapshots, and scan caches are operational data and should stay private.
+
+Use `configure --interactive` as the guided configuration gate before creating or changing server entries. It asks for manual, script, or cancel mode explicitly; lower-level `add-server --interactive` and `update-server --interactive` still validate entries, preserve reviewable backups, and run the mandatory read-only software scan for enabled servers.
+
+`workspace-check` writes validation and workspace status back to the selected private server list, then refreshes the cached `software_scan`. Run `scan-software` when tool installs change, and use `software` or `software --name <tool>` to inspect cached availability without reconnecting. Upload requests are restricted by `paths.upload_roots`, which defaults to the project root.
 
 ## Privacy Defaults
 
@@ -126,7 +131,7 @@ Before publishing changes, check that these are not staged or committed:
 - `*.log`
 - Private keys, real public-key comments, real IPs, real domains, real usernames, local user paths, inventory snapshots, or remote host details.
 
-This repository intentionally does not include a root `.gitignore`; review `git status --short` before committing local operational files.
+The root `.gitignore` covers these local operational paths, but still review `git status --short` before committing.
 
 ## Skill Usage
 
@@ -137,8 +142,12 @@ Agents should use the deterministic helper whenever possible:
 ```powershell
 python .\scripts\remote_ssh.py discover
 python .\scripts\remote_ssh.py choices
+python .\scripts\remote_ssh.py configure --interactive
+python .\scripts\remote_ssh.py update-server --server <id-or-name> --interactive
 python .\scripts\remote_ssh.py check --server <id-or-name>
 python .\scripts\remote_ssh.py workspace-check --server <id-or-name>
+python .\scripts\remote_ssh.py scan-software --server <id-or-name>
+python .\scripts\remote_ssh.py software --server <id-or-name> --name vivado
 python .\scripts\remote_ssh.py request-command --server <id-or-name> --reason "check current directory" -- pwd
 python .\scripts\remote_ssh.py run-request --request <request.json> --execute
 ```
@@ -178,8 +187,8 @@ If this skill helps your research, teaching, or engineering workflow, please cit
   author       = {Jiyuan Liu},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
-  version      = {0.1.0},
-  date         = {2026-05-08},
+  version      = {0.1.5},
+  date         = {2026-05-09},
   url          = {https://github.com/Eriemon/remote-ssh},
   license      = {Apache-2.0},
   note         = {Agent skill package for conservative SSH-based development and test workflows}

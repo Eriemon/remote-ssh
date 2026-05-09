@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-1f6feb"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2f81f7"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.0-7c3aed">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.5-7c3aed">
   <a href="SKILL.md"><img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-16a34a"></a>
   <a href="references/review-checklist.md"><img alt="Safety" src="https://img.shields.io/badge/default-redacted-f59e0b"></a>
 </p>
@@ -34,11 +34,11 @@
 
 适用场景包括：
 
-- SSH 服务器发现、server-list 校验和目标选择。
+- SSH 服务器发现、引导式配置、server-list 校验和目标选择。
 - 密钥/免密 SSH 就绪检查，但不修改 `~/.ssh`。
 - 远程 `~/workspace` 检查和限定在 `workdir` 内的文件操作。
 - 命令、上传、建目录、删除等写操作的 request 审阅流程。
-- Python、Conda、CUDA、GCC/G++、CMake、Vivado、Vitis 等软件可用性缓存查询。
+- Python、Conda、CUDA、GCC/G++、CMake、Vivado、Vitis 等软件可用性缓存查询，包括多版本扫描结果。
 - 面向开发、FPGA、GPU 和应用测试环境的只读远程 inventory。
 
 ## 工作流
@@ -77,6 +77,7 @@ cd remote-ssh
 python .\scripts\remote_ssh.py --help
 python .\scripts\remote_ssh.py discover --help
 python .\scripts\remote_ssh.py list --help
+python .\scripts\remote_ssh.py configure --help
 ```
 
 从非敏感模板创建私有 server list，或把真实配置放在仓库外并用 `--config` 指定：
@@ -88,6 +89,10 @@ python .\scripts\remote_ssh.py choices
 ```
 
 `config/server_list.template.json` 只是占位模板。真实 hostname、username、port、key name、key path、inventory snapshot 和 scan cache 都属于私有运行数据。
+
+创建或修改服务器条目前，使用 `configure --interactive` 作为引导式配置入口。它会明确要求选择 manual、script 或 cancel；底层的 `add-server --interactive` 和 `update-server --interactive` 仍会校验条目、保留可审查备份，并对 enabled server 运行强制只读软件扫描。
+
+`workspace-check` 会把 validation 和 workspace 状态写回选中的私有 server list，然后刷新 `software_scan` 缓存。远端工具安装发生变化时运行 `scan-software`，再用 `software` 或 `software --name <tool>` 在不重新连接的情况下查看缓存可用性。上传请求受 `paths.upload_roots` 限制，默认只允许项目根目录。
 
 ## 隐私默认值
 
@@ -106,7 +111,7 @@ python .\scripts\remote_ssh.py choices
 - `*.log`
 - 私钥、真实公钥注释、真实 IP、真实域名、真实用户名、本机用户路径、inventory snapshot 或远程主机细节。
 
-本仓库按要求不包含根级 `.gitignore`；提交前请用 `git status --short` 人工确认没有运行产物或敏感配置。
+根级 `.gitignore` 已覆盖这些本地运行路径；提交前仍请用 `git status --short` 人工确认没有运行产物或敏感配置。
 
 ## Skill 使用
 
@@ -117,8 +122,12 @@ Codex skill 触发名仍然是 `$erie-remote-ssh`。
 ```powershell
 python .\scripts\remote_ssh.py discover
 python .\scripts\remote_ssh.py choices
+python .\scripts\remote_ssh.py configure --interactive
+python .\scripts\remote_ssh.py update-server --server <id-or-name> --interactive
 python .\scripts\remote_ssh.py check --server <id-or-name>
 python .\scripts\remote_ssh.py workspace-check --server <id-or-name>
+python .\scripts\remote_ssh.py scan-software --server <id-or-name>
+python .\scripts\remote_ssh.py software --server <id-or-name> --name vivado
 python .\scripts\remote_ssh.py request-command --server <id-or-name> --reason "check current directory" -- pwd
 python .\scripts\remote_ssh.py run-request --request <request.json> --execute
 ```
@@ -158,8 +167,8 @@ python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server
   author       = {Jiyuan Liu},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
-  version      = {0.1.0},
-  date         = {2026-05-08},
+  version      = {0.1.5},
+  date         = {2026-05-09},
   url          = {https://github.com/Eriemon/remote-ssh},
   license      = {Apache-2.0},
   note         = {Agent skill package for conservative SSH-based development and test workflows}

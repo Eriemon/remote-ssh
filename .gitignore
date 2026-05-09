@@ -1,0 +1,9 @@
+config/server_list.local.json
+config/server_list.local.json.bak.*
+config/*.bak
+config/*.bak.*
+requests/
+downloads/
+tmp/
+logs/
+*.log

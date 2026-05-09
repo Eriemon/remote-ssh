@@ -863,11 +863,11 @@ def remote_json_operation(
 
 
 def requests_dir(settings: dict[str, Any]) -> Path:
-    return resolve_settings_path(settings, "paths", "requests_dir", "${project_root}/requests")
+    return resolve_settings_path(settings, "paths", "requests_dir", "${skill_dir}/reports/requests")
 
 
 def downloads_dir(settings: dict[str, Any]) -> Path:
-    return resolve_settings_path(settings, "paths", "downloads_dir", "${project_root}/downloads")
+    return resolve_settings_path(settings, "paths", "downloads_dir", "${skill_dir}/reports/downloads")
 
 
 def configured_upload_roots(settings: dict[str, Any]) -> list[Path]:
@@ -1452,6 +1452,23 @@ def prompt_bool(label: str, default: bool = True) -> bool:
         print("Enter yes or no.", file=sys.stderr)
 
 
+def parse_functions_value(value: str) -> list[str]:
+    if not value.strip():
+        return []
+    return [item.strip() for item in re.split(r"[;,]", value) if item.strip()]
+
+
+def format_functions_value(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    return "; ".join(str(item).strip() for item in value if str(item).strip())
+
+
+def prompt_functions(default: list[str] | None = None) -> list[str]:
+    raw = prompt_value("functions", format_functions_value(default or []))
+    return parse_functions_value(raw)
+
+
 def prompt_choice(label: str, choices: list[str], default: str | None = None) -> str:
     if default is not None and default not in choices:
         raise RemoteSshError(f"Invalid default choice {default!r} for {label}.")
@@ -1528,6 +1545,28 @@ def print_existing_host_logins(existing: list[Server]) -> None:
         print(f"  enabled: {server.enabled}")
 
 
+def print_server_record_summary(config: dict[str, Any], record: dict[str, Any], show_sensitive: bool = False) -> None:
+    server = Server(record)
+    print("server_record_summary:")
+    print(f"  id: {server.id}")
+    print(f"  name: {server.name}")
+    print(f"  enabled: {str(server.enabled).lower()}")
+    if show_sensitive:
+        print(f"  target: {user_host(server)}:{server.port}")
+        print(f"  key_path: {expand_key_path(config, server)}")
+        print(f"  workdir: {server.workdir}")
+    else:
+        print(f"  target: {REDACTED}")
+        print(f"  key_path: {REDACTED}")
+        print(f"  workdir: {REDACTED}")
+    category = str(record.get("category", "")).strip()
+    functions = format_functions_value(record.get("functions"))
+    notes = str(record.get("notes", "")).strip()
+    print(f"  category: {category or 'unspecified'}")
+    print(f"  functions: {functions or 'unspecified'}")
+    print(f"  notes: {notes or 'unspecified'}")
+
+
 def print_public_key_guidance(config: dict[str, Any], server: Server, public_key_path: Path, show_sensitive: bool = False) -> None:
     if show_sensitive:
         print(f"public_key_path: {public_key_path}")
@@ -1551,7 +1590,7 @@ def generate_ssh_key_for_server(
     public_key_path = expand_public_key_path(config, server)
     if key_path.exists():
         raise RemoteSshError("Refusing to overwrite an existing private key.")
-    print(f"key_generation_target: {key_path if show_sensitive else REDACTED}")
+    print(f"key_generation_target: {key_path}")
     if not prompt_bool("generate SSH key at this path", False):
         print("key_generation: cancelled")
         return False
@@ -1609,6 +1648,144 @@ def resolve_missing_private_key_for_record(
     return 3
 
 
+def is_passwordless_auth_failure(message: str) -> bool:
+    folded = message.casefold()
+    return any(
+        marker in folded
+        for marker in [
+            "permission denied",
+            "publickey",
+            "key file not found",
+            "authentication failed",
+            "authentications that can continue",
+            "no supported authentication methods",
+        ]
+    )
+
+
+def print_key_only_repair_guidance(message: str = "") -> None:
+    if not message or not is_passwordless_auth_failure(message):
+        return
+    print("next: ask the user whether to run configure-key --interactive for key-only passwordless repair.")
+    print("next: configure-key only changes key_name and validation caches after successful verification.")
+
+
+def update_server_key_repair_cache(
+    config_path: Path,
+    config: dict[str, Any],
+    server: Server,
+    key_name: str,
+    validation: dict[str, Any],
+    workspace_check: dict[str, Any],
+) -> None:
+    selector = server.id.casefold()
+    for record in config.get("servers", []):
+        if isinstance(record, dict) and str(record.get("id", "")).casefold() == selector:
+            record["key_name"] = key_name
+            record["validation"] = validation
+            record["workspace_check"] = workspace_check
+            write_json_atomic(config_path, config)
+            return
+    raise RemoteSshError(f"Cannot update key repair cache; server not found: {server.label}")
+
+
+def cmd_configure_key(args: argparse.Namespace) -> int:
+    if not args.interactive:
+        raise RemoteSshError("configure-key currently requires --interactive.")
+    config, settings, config_path = load_config_for_args(args)
+    current = select_server(config, args.server, getattr(args, "allow_disabled", False))
+    candidate_record = dict(current.raw)
+    candidate_record["key_name"] = prompt_value("key_name", current.key_name, required=True)
+    candidate_record.pop("validation", None)
+    candidate_record.pop("workspace_check", None)
+    candidate_record.pop("software_scan", None)
+    candidate = Server(candidate_record)
+
+    errors = validate_server_shape(config, candidate, require_key_file=False)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        raise RemoteSshError("Server local precheck failed.")
+
+    key_path = expand_key_path(config, candidate)
+    public_key_path = expand_public_key_path(config, candidate)
+    print(f"server: {current.label}")
+    print(f"key_path: {key_path if getattr(args, 'show_sensitive', False) else REDACTED}")
+    if not key_path.exists():
+        print("key_status: missing_private_key")
+        action = prompt_choice("missing_key_action", ["generate", "cancel"], "generate")
+        if action == "cancel":
+            print("configuration_status: cancelled")
+            return 3
+        if not generate_ssh_key_for_server(config, settings, candidate, getattr(args, "show_sensitive", False)):
+            print("configuration_status: cancelled")
+            return 3
+    elif not public_key_path.exists():
+        print("key_status: missing_public_key")
+        print_public_key_guidance(config, candidate, public_key_path, getattr(args, "show_sensitive", False))
+        print("configuration_status: cancelled")
+        print("next: create the matching public key file before passwordless verification.")
+        return 2
+    else:
+        print("key_status: local_key_pair_present")
+        print_public_key_guidance(config, candidate, public_key_path, getattr(args, "show_sensitive", False))
+
+    if not prompt_bool("remote_public_key_installed", False):
+        print("configuration_status: cancelled")
+        print("next: install the public key on the remote account, then rerun configure-key.")
+        return 3
+
+    timeout = args.timeout or default_timeout(settings)
+    result = run_workspace_probe(config, settings, candidate, timeout)
+    print(f"server: {current.label}")
+    print(f"workdir: {REDACTED}")
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr) or f"SSH command failed with exit code {result.returncode}."
+        if summary:
+            print(redact_text(config, summary), file=sys.stderr)
+        print("key_only_repair: verification_failed")
+        print_key_only_repair_guidance(summary)
+        return result.returncode
+
+    backup = backup_file(config_path)
+    timestamp = utc_timestamp()
+    update_server_key_repair_cache(
+        config_path,
+        config,
+        current,
+        candidate.key_name,
+        {
+            "status": "verified",
+            "method": "ssh_workspace",
+            "verified_at": timestamp,
+            "last_error": None,
+        },
+        {
+            "status": "ok",
+            "checked_at": timestamp,
+            "message": f"The working directory can be accessed: {candidate.workdir}",
+        },
+    )
+    print("key_only_repair: verified")
+    if backup:
+        print(f"backup: {backup}")
+
+    refreshed = load_config(config_path)
+    refreshed_server = select_server(refreshed, current.id, allow_disabled=False)
+    scan_args = argparse.Namespace(timeout=timeout, accept_new_host_key=False)
+    scan_result, inventory = run_software_scan(refreshed, settings, refreshed_server, scan_args)
+    if scan_result.returncode != 0:
+        summary = summarize_error(scan_result.stderr) or f"SSH command failed with exit code {scan_result.returncode}."
+        snapshot = failed_software_snapshot(settings, redact_text(refreshed, summary))
+        cache_software_snapshot(config_path, refreshed, refreshed_server, snapshot)
+        print(redact_text(refreshed, summary), file=sys.stderr)
+        print_software_snapshot(refreshed_server, snapshot)
+        return scan_result.returncode
+    snapshot = software_snapshot_from_inventory(settings, inventory, scan_result.stdout)
+    cache_software_snapshot(config_path, refreshed, refreshed_server, snapshot)
+    return print_software_snapshot(refreshed_server, snapshot)
+
+
 def cmd_add_server(args: argparse.Namespace) -> int:
     if not args.interactive:
         raise RemoteSshError("add-server currently requires --interactive.")
@@ -1617,6 +1794,7 @@ def cmd_add_server(args: argparse.Namespace) -> int:
     config = load_config(config_path) if config_path.exists() else empty_config()
 
     default_id = next_server_id(config)
+    print("section: connection")
     server_id = prompt_value("id", default_id, required=True)
     name = prompt_value("name", server_id, required=True)
     host = prompt_value("host", required=True)
@@ -1641,9 +1819,13 @@ def cmd_add_server(args: argparse.Namespace) -> int:
             print("add_server_status: cancelled")
             print("next: choose an existing server id/name or enter a different host.")
             return 3
+    print("section: key-workdir")
     key_name = prompt_value("key_name", required=True)
     workdir = prompt_value("workdir", default_workdir(settings), required=True)
     enabled = prompt_bool("enabled", True)
+    print("section: metadata")
+    category = prompt_value("category", "")
+    functions = prompt_functions()
     notes = prompt_value("notes", "")
 
     record = {
@@ -1657,8 +1839,17 @@ def cmd_add_server(args: argparse.Namespace) -> int:
         "workdir": workdir,
         "enabled": enabled,
     }
+    if category:
+        record["category"] = category
+    if functions:
+        record["functions"] = functions
     if notes:
         record["notes"] = notes
+
+    print_server_record_summary(config, record, getattr(args, "show_sensitive", False))
+    if not prompt_bool("save_server_record", True):
+        print("add_server_status: cancelled")
+        return 3
 
     key_resolution = resolve_missing_private_key_for_record(config, settings, record, getattr(args, "show_sensitive", False))
     if key_resolution is not None:
@@ -1711,6 +1902,73 @@ def cmd_add_server(args: argparse.Namespace) -> int:
     return 0
 
 
+UPDATE_FIELDS = ["name", "host", "port", "username", "key_name", "workdir", "enabled", "category", "functions", "notes"]
+CONNECTION_FIELDS = {"host", "port", "username", "key_name", "workdir"}
+
+
+def print_update_menu() -> None:
+    print("field_menu:")
+    print("  show: display current candidate values")
+    print("  all: edit all fields")
+    print("  done: validate and save")
+    print("  cancel: leave server list unchanged")
+    print(f"  fields: {', '.join(UPDATE_FIELDS)}")
+
+
+def prompt_update_action() -> str:
+    allowed = {"show", "all", "done", "cancel", *UPDATE_FIELDS}
+    while True:
+        value = input("update_field [show/all/done/cancel/name/host/port/username/key_name/workdir/enabled/category/functions/notes]: ").strip().casefold()
+        if not value:
+            print_update_menu()
+            continue
+        if value in allowed:
+            return value
+        print(f"Enter one of: {', '.join(['show', 'all', 'done', 'cancel', *UPDATE_FIELDS])}.", file=sys.stderr)
+
+
+def edit_server_field(record: dict[str, Any], field: str) -> None:
+    if field == "name":
+        record["name"] = prompt_value("name", str(record.get("name", "")), required=True)
+    elif field == "host":
+        record["host"] = prompt_value("host", str(record.get("host", "")), required=True)
+    elif field == "port":
+        record["port"] = parse_port_value(prompt_value("port", str(record.get("port", "22")), required=True))
+    elif field == "username":
+        record["username"] = prompt_value("username", str(record.get("username", "")), required=True)
+    elif field == "key_name":
+        record["key_name"] = prompt_value("key_name", str(record.get("key_name", "")), required=True)
+    elif field == "workdir":
+        record["workdir"] = prompt_value("workdir", str(record.get("workdir", "")), required=True)
+    elif field == "enabled":
+        record["enabled"] = prompt_bool("enabled", bool(record.get("enabled", True)))
+    elif field == "category":
+        value = prompt_value("category", str(record.get("category", "")))
+        if value:
+            record["category"] = value
+        else:
+            record.pop("category", None)
+    elif field == "functions":
+        functions = prompt_functions(record.get("functions") if isinstance(record.get("functions"), list) else [])
+        if functions:
+            record["functions"] = functions
+        else:
+            record.pop("functions", None)
+    elif field == "notes":
+        value = prompt_value("notes", str(record.get("notes", "")))
+        if value:
+            record["notes"] = value
+        else:
+            record.pop("notes", None)
+    else:
+        raise RemoteSshError(f"Unsupported update field: {field}")
+
+
+def edit_all_server_fields(record: dict[str, Any]) -> None:
+    for field in UPDATE_FIELDS:
+        edit_server_field(record, field)
+
+
 def cmd_update_server(args: argparse.Namespace) -> int:
     if not args.interactive:
         raise RemoteSshError("update-server currently requires --interactive.")
@@ -1718,28 +1976,40 @@ def cmd_update_server(args: argparse.Namespace) -> int:
     current = select_server(config, args.server, allow_disabled=True)
     record = dict(current.raw)
 
-    record["name"] = prompt_value("name", current.name, required=True)
-    record["host"] = prompt_value("host", current.host, required=True)
-    record["port"] = parse_port_value(prompt_value("port", str(current.port), required=True))
-    record["username"] = prompt_value("username", current.username, required=True)
-    record["key_name"] = prompt_value("key_name", current.key_name, required=True)
-    record["workdir"] = prompt_value("workdir", current.workdir, required=True)
-    record["enabled"] = prompt_bool("enabled", current.enabled)
-    notes_default = str(current.raw.get("notes", ""))
-    notes = prompt_value("notes", notes_default)
-    if notes:
-        record["notes"] = notes
-    else:
-        record.pop("notes", None)
+    print_update_menu()
+    while True:
+        action = prompt_update_action()
+        if action == "show":
+            print_server_record_summary(config, record, getattr(args, "show_sensitive", False))
+            continue
+        if action == "cancel":
+            print("configuration_status: cancelled")
+            return 3
+        if action == "done":
+            break
+        if action == "all":
+            edit_all_server_fields(record)
+            break
+        edit_server_field(record, action)
 
-    if any(record.get(field) != current.raw.get(field) for field in ["host", "port", "username", "key_name", "workdir"]):
+    print_server_record_summary(config, record, getattr(args, "show_sensitive", False))
+    if not prompt_bool("save_server_record", True):
+        print("configuration_status: cancelled")
+        return 3
+
+    connection_changed = any(record.get(field) != current.raw.get(field) for field in CONNECTION_FIELDS)
+    enabled_changed_to_true = bool(record.get("enabled", True)) and not current.enabled
+
+    if connection_changed:
         record.pop("validation", None)
         record.pop("workspace_check", None)
         record.pop("software_scan", None)
 
-    key_resolution = resolve_missing_private_key_for_record(config, settings, record, getattr(args, "show_sensitive", False))
-    if key_resolution is not None:
-        return key_resolution
+    should_validate_key_material = bool(record.get("enabled", True)) and (connection_changed or enabled_changed_to_true)
+    if should_validate_key_material:
+        key_resolution = resolve_missing_private_key_for_record(config, settings, record, getattr(args, "show_sensitive", False))
+        if key_resolution is not None:
+            return key_resolution
 
     validate_updated_server_record(config, record, current.id)
     for index, server in enumerate(config.get("servers", [])):
@@ -1766,6 +2036,12 @@ def cmd_update_server(args: argparse.Namespace) -> int:
         cache_software_snapshot(config_path, refreshed, server, snapshot)
         print(f"updated: {server.id}")
         print("software_scan_status: skipped")
+        if backup:
+            print(f"backup: {backup}")
+        return 0
+
+    if not (connection_changed or enabled_changed_to_true):
+        print(f"updated: {server.id}")
         if backup:
             print(f"backup: {backup}")
         return 0
@@ -1843,8 +2119,8 @@ def cmd_configure(args: argparse.Namespace) -> int:
         )
 
     print("configured_servers:")
-    for server in servers:
-        print(f"- {server.label}: {server.name} enabled={str(server.enabled).lower()}")
+    for index, server in enumerate(servers, start=1):
+        print(f"[{index}] {server.label}: {server.name} enabled={str(server.enabled).lower()}")
     action = prompt_choice("configuration_action", ["add", "update", "cancel"])
     if action == "cancel":
         print("configuration_status: cancelled")
@@ -1860,6 +2136,11 @@ def cmd_configure(args: argparse.Namespace) -> int:
         )
 
     selector = prompt_value("server", required=True)
+    if selector.isdigit():
+        index = int(selector)
+        if index < 1 or index > len(servers):
+            raise RemoteSshError(f"Server selection index out of range: {selector}")
+        selector = servers[index - 1].id
     return cmd_update_server(
         argparse.Namespace(
             settings=args.settings,
@@ -1990,6 +2271,7 @@ def cmd_workspace_check(args: argparse.Namespace) -> int:
             },
         )
         print("status: failed")
+        print_key_only_repair_guidance(summary or "")
         if backup:
             print(f"backup: {backup}")
         return result.returncode
@@ -2435,6 +2717,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("status: failed")
         for error in errors:
             print(f"- {error}")
+        if any(is_passwordless_auth_failure(error) for error in errors):
+            print_key_only_repair_guidance("; ".join(errors))
         return 2
 
     print("status: ok")
@@ -2472,7 +2756,8 @@ def cmd_exec(args: argparse.Namespace) -> int:
     if result.returncode != 0:
         summary = summarize_error(result.stderr)
         if summary:
-            print(summary, file=sys.stderr)
+            print(redact_text(config, summary), file=sys.stderr)
+        print_key_only_repair_guidance(summary or "")
         return result.returncode
     return 0
 
@@ -2763,15 +3048,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_server_parser = subparsers.add_parser("add-server", help="Add a server entry to the configured server list.")
     add_common(add_server_parser, include_server=False)
-    add_server_parser.add_argument("--interactive", action="store_true", help="Prompt for server fields and write the server list.")
+    add_server_parser.add_argument("--interactive", action="store_true", help="Prompt grouped server fields, show a summary, and write the server list.")
     add_server_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
     add_server_parser.set_defaults(func=cmd_add_server)
 
     update_server_parser = subparsers.add_parser("update-server", help="Update one configured SSH server entry.")
     add_common(update_server_parser)
-    update_server_parser.add_argument("--interactive", action="store_true", help="Prompt for new values using the existing server as defaults.")
+    update_server_parser.add_argument("--interactive", action="store_true", help="Prompt with a field menu using the existing server as defaults.")
     update_server_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
     update_server_parser.set_defaults(func=cmd_update_server)
+
+    configure_key_parser = subparsers.add_parser("configure-key", help="Repair one server's key_name and passwordless validation only.")
+    add_common(configure_key_parser)
+    configure_key_parser.add_argument("--interactive", action="store_true", help="Prompt for key-only repair and verify before writing.")
+    configure_key_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
+    configure_key_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
+    configure_key_parser.set_defaults(func=cmd_configure_key)
 
     setup_key_parser = subparsers.add_parser("setup-key", help="Check local key files and print passwordless SSH setup guidance.")
     add_common(setup_key_parser)

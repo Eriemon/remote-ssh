@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-1f6feb"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2f81f7"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.5-7c3aed">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.6-7c3aed">
   <a href="SKILL.md"><img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-16a34a"></a>
   <a href="references/review-checklist.md"><img alt="Safety" src="https://img.shields.io/badge/default-redacted-f59e0b"></a>
 </p>
@@ -36,6 +36,7 @@ Use it when an agent needs to work on:
 
 - SSH target discovery, guided configuration, server-list validation, and target selection.
 - Passwordless/key-based SSH readiness checks without modifying `~/.ssh`.
+- Guided key-only repair for existing entries through `configure-key --interactive`.
 - Remote `~/workspace` validation and bounded file operations.
 - Reviewed command, upload, mkdir, and delete requests.
 - Cached software availability checks for Python, Conda, CUDA, GCC/G++, CMake, Vivado, and Vitis, including multi-version scan results.
@@ -114,6 +115,8 @@ Use `configure --interactive` as the guided configuration gate before creating o
 
 `workspace-check` writes validation and workspace status back to the selected private server list, then refreshes the cached `software_scan`. Run `scan-software` when tool installs change, and use `software` or `software --name <tool>` to inspect cached availability without reconnecting. Upload requests are restricted by `paths.upload_roots`, which defaults to the project root.
 
+Use `configure-key --interactive` only after an explicit guided choice for an existing server whose key reference or passwordless login needs repair. Bundled request and download artifacts now default under `${skill_dir}/reports`; preserve any existing `reports/` directory before replacing an installed skill unless cleanup is explicitly requested.
+
 ## Privacy Defaults
 
 The helper does not store real account or host information in the public files in this repository. The default local configuration path is `${skill_dir}/config/server_list.local.json`, and that file is intentionally absent from the repository.
@@ -126,6 +129,7 @@ Before publishing changes, check that these are not staged or committed:
 - `config/*.bak` and `config/*.bak.*`
 - `requests/`
 - `downloads/`
+- `reports/`
 - `tmp/`
 - `logs/`
 - `*.log`
@@ -144,6 +148,7 @@ python .\scripts\remote_ssh.py discover
 python .\scripts\remote_ssh.py choices
 python .\scripts\remote_ssh.py configure --interactive
 python .\scripts\remote_ssh.py update-server --server <id-or-name> --interactive
+python .\scripts\remote_ssh.py configure-key --server <id-or-name> --interactive
 python .\scripts\remote_ssh.py check --server <id-or-name>
 python .\scripts\remote_ssh.py workspace-check --server <id-or-name>
 python .\scripts\remote_ssh.py scan-software --server <id-or-name>
@@ -187,7 +192,7 @@ If this skill helps your research, teaching, or engineering workflow, please cit
   author       = {Jiyuan Liu},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
-  version      = {0.1.5},
+  version      = {0.1.6},
   date         = {2026-05-09},
   url          = {https://github.com/Eriemon/remote-ssh},
   license      = {Apache-2.0},

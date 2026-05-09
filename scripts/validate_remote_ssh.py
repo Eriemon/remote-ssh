@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ ROOT = remote_ssh.PROJECT_ROOT
 SKILL_DIR = remote_ssh.SKILL_DIR
 TOOL = SKILL_DIR / "scripts" / "remote_ssh.py"
 SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+ENCODING_CANARY = "编码校验：中文内容应保持 UTF-8，无乱码。"
 
 
 class ValidationError(Exception):
@@ -1015,6 +1017,7 @@ def negative_tests(settings_path: Path, server_list: Path, ref_config: dict, tmp
     missing_key = write_json(tmp_dir / "missing-key.json", missing_key_config)
     result = run_tool(["check", "--settings", str(settings_path), "--config", str(missing_key), "--server", base_server["id"]], expected=2)
     assert_contains(result.stdout, "key file not found", "missing key output")
+    assert_contains(result.stdout, "configure-key", "missing key output")
     assert_not_contains(result.stdout, "definitely_missing_remote_ssh_validation_key", "missing key output")
 
     run_tool(["exec", *base, "--server", base_server["id"], "--timeout", "0", "--", "echo", "ok"], expected=2)
@@ -1053,8 +1056,11 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     empty_result = run_tool(["discover", "--settings", str(temp_settings)], expected=4)
     assert_contains(empty_result.stdout, "status: no_enabled_ssh", "empty discover output")
 
-    add_input = "\n\nfixture.example.invalid\n\ncodex\nid_remote_validation\n\n\nvalidation note\n"
+    add_input = "\n\nfixture.example.invalid\n\ncodex\nid_remote_validation\n\n\nGeneral\nremote development; workspace validation\nvalidation note\ny\n"
     add_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], input_text=add_input)
+    assert_contains(add_result.stdout, "section: connection", "add-server output")
+    assert_contains(add_result.stdout, "section: metadata", "add-server output")
+    assert_contains(add_result.stdout, "server_record_summary:", "add-server output")
     assert_contains(add_result.stdout, "added: server_1", "add-server output")
     assert_contains(add_result.stdout, "backup:", "add-server output")
     backups = list(missing_list.parent.glob("server_list.local.json.bak.*"))
@@ -1066,13 +1072,17 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError(f"unexpected added server record: {managed_config}")
     if managed_config["servers"][0]["workdir"] != "~/workspace-from-settings" or managed_config["servers"][0]["enabled"] is not True:
         raise ValidationError(f"unexpected add-server defaults: {managed_config}")
+    if managed_config["servers"][0].get("category") != "General":
+        raise ValidationError(f"add-server did not write category: {managed_config}")
+    if managed_config["servers"][0].get("functions") != ["remote development", "workspace validation"]:
+        raise ValidationError(f"add-server did not parse functions metadata: {managed_config}")
     if managed_config["servers"][0].get("software_scan", {}).get("status") != "ok":
         raise ValidationError(f"add-server did not cache software_scan: {managed_config}")
 
     available_result = run_tool(["discover", "--settings", str(temp_settings)])
     assert_contains(available_result.stdout, "status: available", "available discover output")
 
-    same_host_input = "server_2\nsame-host-alt\nfixture.example.invalid\n30022\nvalidation-alt-user\n\nid_remote_validation\n~/workspace\ny\nsame host alt\n"
+    same_host_input = "server_2\nsame-host-alt\nfixture.example.invalid\n30022\nvalidation-alt-user\n\nid_remote_validation\n~/workspace\ny\n\n\nsame host alt\ny\n"
     same_host_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], input_text=same_host_input)
     assert_contains(same_host_result.stdout, "matching_host_count: 1", "same-host add-server output")
     assert_contains(same_host_result.stdout, "existing: server_1", "same-host add-server output")
@@ -1083,7 +1093,7 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError(f"same-host add-server did not add the alternate login: {same_host_config}")
 
     before_duplicate_identity = json.dumps(same_host_config, sort_keys=True)
-    duplicate_identity_input = "server_3\nsame-host-duplicate\nfixture.example.invalid\n22\ncodex\n\nid_remote_validation\n~/workspace\ny\nduplicate identity\n"
+    duplicate_identity_input = "server_3\nsame-host-duplicate\nfixture.example.invalid\n22\ncodex\n\n"
     duplicate_identity_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], expected=3, input_text=duplicate_identity_input)
     assert_contains(duplicate_identity_result.stdout, "duplicate_login: true", "duplicate identity add-server output")
     assert_contains(duplicate_identity_result.stdout, "add_server_status: cancelled", "duplicate identity add-server output")
@@ -1093,18 +1103,18 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     managed_config = load_ref(missing_list)
 
     before = json.dumps(managed_config, sort_keys=True)
-    duplicate_input = "server_1\nanother\nhost.example\n22\nuser\nkey\n~/workspace\ny\n\n"
+    duplicate_input = "server_1\nanother\nhost.example\n22\nuser\nkey\n~/workspace\ny\n\n\n\ny\n"
     run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], expected=1, input_text=duplicate_input)
     after_duplicate = json.dumps(load_ref(missing_list), sort_keys=True)
     if before != after_duplicate:
         raise ValidationError("duplicate add-server attempt changed the server list")
 
-    invalid_port_input = "server_2\nserver_2\nhost.example\n0\nuser\nkey\n~/workspace\ny\n\n"
+    invalid_port_input = "server_2\nserver_2\nhost.example\n0\nuser\nkey\n~/workspace\ny\n\n\n\ny\n"
     run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], expected=1, input_text=invalid_port_input)
     if before != json.dumps(load_ref(missing_list), sort_keys=True):
         raise ValidationError("invalid port add-server attempt changed the server list")
 
-    empty_host_input = "server_2\nserver_2\n\n22\nuser\nkey\n~/workspace\ny\n\n"
+    empty_host_input = "server_2\nserver_2\n\n22\nuser\nkey\n~/workspace\ny\n\n\n\ny\n"
     run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], expected=1, input_text=empty_host_input)
     if before != json.dumps(load_ref(missing_list), sort_keys=True):
         raise ValidationError("empty host add-server attempt changed the server list")
@@ -1115,13 +1125,26 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     disabled_config = load_ref(disabled_list)
     disabled_config["default_key_dir"] = str(key_dir)
     write_json(disabled_list, disabled_config)
-    disabled_input = "disabled_1\nDisabled Fixture\ndisabled.example.invalid\n22\ncodex\nid_remote_validation\n~/workspace\nn\ndisabled note\n"
+    disabled_input = "disabled_1\nDisabled Fixture\ndisabled.example.invalid\n22\ncodex\nid_remote_validation\n~/workspace\nn\n\n\ndisabled note\ny\n"
     disabled_add = run_tool(["add-server", "--settings", str(disabled_settings), "--interactive"], input_text=disabled_input)
     assert_contains(disabled_add.stdout, "server_record_saved: disabled_1", "disabled add-server output")
     assert_contains(disabled_add.stdout, "software_scan_status: skipped", "disabled add-server output")
     disabled_written = load_ref(disabled_list)
     if disabled_written["servers"][0]["enabled"] is not False:
         raise ValidationError(f"disabled add-server did not preserve enabled false: {disabled_written}")
+
+    cancel_list = tmp_dir / "managed-cancel" / "server_list.local.json"
+    cancel_settings = copy_settings_with_server_list(settings, tmp_dir / "managed-cancel-settings.json", cancel_list)
+    run_tool(["init-config", "--settings", str(cancel_settings)])
+    cancel_config = load_ref(cancel_list)
+    cancel_config["default_key_dir"] = str(key_dir)
+    write_json(cancel_list, cancel_config)
+    before_cancel = json.dumps(load_ref(cancel_list), sort_keys=True)
+    cancel_input = "cancel_add\nCancel Add\ncancel.example.invalid\n22\ncodex\nid_remote_validation\n~/workspace\ny\n\n\ncancel note\nn\n"
+    cancel_add = run_tool(["add-server", "--settings", str(cancel_settings), "--interactive"], expected=3, input_text=cancel_input)
+    assert_contains(cancel_add.stdout, "add_server_status: cancelled", "cancelled add-server output")
+    if before_cancel != json.dumps(load_ref(cancel_list), sort_keys=True):
+        raise ValidationError("add-server summary cancellation should leave the server list unchanged")
 
 
 def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
@@ -1148,16 +1171,16 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     config["default_key_dir"] = str(key_dir)
     write_json(gate_list, config)
 
-    add_input = "script\n\n\nmissing.example.invalid\n\nremote_user_sensitive\nid_missing_key\n\n\n\ngenerate\ny\nempty\n"
+    add_input = "script\n\n\nmissing.example.invalid\n\nremote_user_sensitive\nid_missing_key\n\n\nGate\nvalidation setup\n\ny\ngenerate\ny\nempty\n"
     add_result = run_tool(["configure", "--settings", str(gate_settings), "--interactive"], input_text=add_input)
     assert_contains(add_result.stdout, "configuration_mode: script", "configure script output")
+    assert_contains(add_result.stdout, f"key_generation_target: {key_dir / 'id_missing_key'}", "configure script output")
     assert_contains(add_result.stdout, "key_generation: created", "configure script output")
     assert_contains(add_result.stdout, "manual_login_required: true", "configure script output")
     assert_contains(add_result.stdout, "authorized_keys", "configure script output")
     assert_contains(add_result.stdout, "added: server_1", "configure script output")
     assert_not_contains(add_result.stdout, "missing.example.invalid", "configure script output")
     assert_not_contains(add_result.stdout, "remote_user_sensitive", "configure script output")
-    assert_not_contains(add_result.stdout, "id_missing_key", "configure script output")
     if not (key_dir / "id_missing_key").exists() or not (key_dir / "id_missing_key.pub").exists():
         raise ValidationError("configure script key generation did not create private/public key files")
 
@@ -1178,11 +1201,15 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     )
     assert_contains(server_mode_cancel.stdout, "configuration_status: cancelled", "configure --server cancel output")
 
-    update_input = "Updated Gate Server\nupdated.example.invalid\n30022\nvalidation-alt-user\nid_updated_key\n~/updated-workspace\ny\nupdated note\ngenerate\ny\nempty\n"
+    update_input = "all\nUpdated Gate Server\nupdated.example.invalid\n30022\nvalidation-alt-user\nid_updated_key\n~/updated-workspace\ny\nUpdated Category\nVivado synthesis; Vitis validation\nupdated note\ny\ngenerate\ny\nempty\n"
     update_result = run_tool(
         ["update-server", "--settings", str(gate_settings), "--server", "server_1", "--interactive"],
         input_text=update_input,
     )
+    assert_contains(update_result.stdout, "field_menu:", "update-server output")
+    assert_contains(update_result.stdout, "server_record_summary:", "update-server output")
+    assert_contains(update_result.stdout, "save_server_record", "update-server output")
+    assert_contains(update_result.stdout, f"key_generation_target: {key_dir / 'id_updated_key'}", "update-server output")
     assert_contains(update_result.stdout, "updated: server_1", "update-server output")
     assert_contains(update_result.stdout, "key_generation: created", "update-server output")
     updated = load_ref(gate_list)
@@ -1195,6 +1222,8 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         "key_name": "id_updated_key",
         "workdir": "~/updated-workspace",
         "enabled": True,
+        "category": "Updated Category",
+        "functions": ["Vivado synthesis", "Vitis validation"],
         "notes": "updated note",
     }
     for key, value in expected.items():
@@ -1202,6 +1231,85 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
             raise ValidationError(f"update-server did not write {key}: {updated}")
     if not list(gate_list.parent.glob("server_list.local.json.bak.*")):
         raise ValidationError("update-server should create a backup")
+
+    updated["servers"][0]["validation"] = {
+        "status": "verified",
+        "method": "ssh_workspace",
+        "verified_at": "2026-01-01T00:00:00Z",
+        "last_error": None,
+    }
+    updated["servers"][0]["workspace_check"] = {
+        "status": "ok",
+        "checked_at": "2026-01-01T00:00:00Z",
+        "message": "metadata preserve fixture",
+    }
+    updated["servers"][0]["software_scan"] = {"status": "ok", "tools": {"python": {"status": "installed"}}}
+    write_json(gate_list, updated)
+    metadata_update = run_tool(
+        ["configure", "--settings", str(gate_settings), "--interactive"],
+        input_text="script\nupdate\n1\nshow\nnotes\nmetadata only note\ndone\ny\n",
+    )
+    assert_contains(metadata_update.stdout, "configured_servers:", "configure numbered update output")
+    assert_contains(metadata_update.stdout, "[1]", "configure numbered update output")
+    assert_contains(metadata_update.stdout, "field_menu:", "configure numbered update output")
+    metadata_written = load_ref(gate_list)["servers"][0]
+    if metadata_written.get("notes") != "metadata only note":
+        raise ValidationError(f"field-menu update did not change selected field: {metadata_written}")
+    if metadata_written.get("host") != "updated.example.invalid" or metadata_written.get("port") != 30022:
+        raise ValidationError(f"field-menu update changed unselected connection fields: {metadata_written}")
+    if metadata_written.get("validation", {}).get("status") != "verified" or metadata_written.get("workspace_check", {}).get("status") != "ok":
+        raise ValidationError(f"metadata-only update should preserve validation/workspace caches: {metadata_written}")
+
+    before_save_cancel = json.dumps(load_ref(gate_list), sort_keys=True)
+    save_cancel = run_tool(
+        ["update-server", "--settings", str(gate_settings), "--server", "server_1", "--interactive"],
+        expected=3,
+        input_text="notes\ntransient note\ndone\nn\n",
+    )
+    assert_contains(save_cancel.stdout, "server_record_summary:", "update-server save cancel output")
+    assert_contains(save_cancel.stdout, "configuration_status: cancelled", "update-server save cancel output")
+    if before_save_cancel != json.dumps(load_ref(gate_list), sort_keys=True):
+        raise ValidationError("update-server save cancellation should leave the server list unchanged")
+
+    missing_metadata = load_ref(gate_list)
+    missing_metadata["servers"][0]["key_name"] = "missing_metadata_key"
+    missing_metadata["servers"][0]["enabled"] = True
+    missing_metadata["servers"][0]["validation"] = {
+        "status": "verified",
+        "method": "ssh_workspace",
+        "verified_at": "2026-01-01T00:00:00Z",
+        "last_error": None,
+    }
+    missing_metadata["servers"][0]["workspace_check"] = {
+        "status": "ok",
+        "checked_at": "2026-01-01T00:00:00Z",
+        "message": "missing key metadata fixture",
+    }
+    missing_metadata["servers"][0]["software_scan"] = {"status": "ok", "tools": {"python": {"status": "installed"}}}
+    write_json(gate_list, missing_metadata)
+    missing_metadata_update = run_tool(
+        ["update-server", "--settings", str(gate_settings), "--server", "server_1", "--interactive"],
+        input_text="notes\nmetadata survives missing key\ndone\ny\n",
+    )
+    assert_contains(missing_metadata_update.stdout, "updated: server_1", "metadata-only missing key update output")
+    assert_not_contains(missing_metadata_update.stdout, "missing_key_action", "metadata-only missing key update output")
+    missing_metadata_written = load_ref(gate_list)["servers"][0]
+    if missing_metadata_written.get("notes") != "metadata survives missing key":
+        raise ValidationError(f"metadata-only update with missing key did not write notes: {missing_metadata_written}")
+    if missing_metadata_written.get("enabled") is not True:
+        raise ValidationError(f"metadata-only update with missing key changed enabled: {missing_metadata_written}")
+    if missing_metadata_written.get("validation", {}).get("status") != "verified":
+        raise ValidationError(f"metadata-only update with missing key should preserve validation cache: {missing_metadata_written}")
+
+    before_menu_cancel = json.dumps(load_ref(gate_list), sort_keys=True)
+    menu_cancel = run_tool(
+        ["update-server", "--settings", str(gate_settings), "--server", "server_1", "--interactive"],
+        expected=3,
+        input_text="name\nShould Not Persist\ncancel\n",
+    )
+    assert_contains(menu_cancel.stdout, "configuration_status: cancelled", "update-server menu cancel output")
+    if before_menu_cancel != json.dumps(load_ref(gate_list), sort_keys=True):
+        raise ValidationError("update-server menu cancel should leave the server list unchanged")
 
     disabled_list = tmp_dir / "gate-disabled" / "server_list.local.json"
     disabled_settings = copy_settings_with_server_list(settings, tmp_dir / "gate-disabled-settings.json", disabled_list)
@@ -1213,7 +1321,7 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     disabled_config = load_ref(disabled_list)
     disabled_config["default_key_dir"] = str(tmp_dir / "gate-disabled-keys")
     write_json(disabled_list, disabled_config)
-    disabled_input = "disabled_missing\nDisabled Missing\nmissing-key.example.invalid\n22\ncodex\nid_disabled_missing\n~/workspace\ny\nmissing key\ndisable\n"
+    disabled_input = "disabled_missing\nDisabled Missing\nmissing-key.example.invalid\n22\ncodex\nid_disabled_missing\n~/workspace\ny\n\n\nmissing key\ny\ndisable\n"
     disabled_result = run_tool(["add-server", "--settings", str(disabled_settings), "--interactive"], input_text=disabled_input)
     assert_contains(disabled_result.stdout, "key_generation: skipped", "add-server missing key disable output")
     assert_contains(disabled_result.stdout, "server_record_saved: disabled_missing", "add-server missing key disable output")
@@ -1232,7 +1340,7 @@ def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     cancel_config["default_key_dir"] = str(tmp_dir / "gate-cancel-keys")
     write_json(cancel_list, cancel_config)
     before_missing_cancel = json.dumps(load_ref(cancel_list), sort_keys=True)
-    cancel_input = "cancel_missing\nCancel Missing\nmissing-key.example.invalid\n22\ncodex\nid_cancel_missing\n~/workspace\ny\nmissing key\ncancel\n"
+    cancel_input = "cancel_missing\nCancel Missing\nmissing-key.example.invalid\n22\ncodex\nid_cancel_missing\n~/workspace\ny\n\n\nmissing key\ny\ncancel\n"
     missing_cancel = run_tool(["add-server", "--settings", str(cancel_settings), "--interactive"], expected=3, input_text=cancel_input)
     assert_contains(missing_cancel.stdout, "configuration_status: cancelled", "add-server missing key cancel output")
     if before_missing_cancel != json.dumps(load_ref(cancel_list), sort_keys=True):
@@ -1475,6 +1583,153 @@ def passwordless_setup_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     assert_contains(missing_result.stdout, "public_key_exists: false", "missing setup-key output")
     assert_contains(missing_result.stdout, "next:", "missing setup-key output")
     assert_not_contains(missing_result.stdout, "missing_key", "missing setup-key output")
+
+
+def key_only_repair_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
+    key_dir = tmp_dir / "repair-keys"
+    key_dir.mkdir()
+    server_list = write_json(
+        tmp_dir / "repair-server-list.json",
+        {
+            "version": 1,
+            "default_key_dir": str(key_dir),
+            "servers": [
+                {
+                    "id": "repair_1",
+                    "name": "Repair Validation",
+                    "category": "General",
+                    "functions": ["passwordless repair"],
+                    "type": "ssh",
+                    "host": "repair.example.invalid",
+                    "port": 22,
+                    "username": "codex",
+                    "key_name": "old_missing_key",
+                    "workdir": "~/workspace",
+                    "enabled": True,
+                    "notes": "preserve me",
+                    "validation": {
+                        "status": "failed",
+                        "method": "ssh_key",
+                        "verified_at": None,
+                        "last_error": "old validation failure",
+                    },
+                    "workspace_check": {
+                        "status": "failed",
+                        "checked_at": "2026-01-01T00:00:00Z",
+                        "message": "old workspace failure",
+                    },
+                    "software_scan": {
+                        "status": "failed",
+                        "tools": {},
+                        "fpga_devices": [],
+                        "raw_summary": "",
+                        "last_error": "old scan failure",
+                    },
+                }
+            ],
+        },
+    )
+    temp_settings = copy_settings_with_server_list(settings, tmp_dir / "repair-settings.json", server_list)
+    settings_copy = load_ref(temp_settings)
+    settings_copy["tools"]["ssh_keygen"] = str(create_fake_keygen(tmp_dir))
+    settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(
+            tmp_dir,
+            [
+                {"stdout": "/home/codex/workspace\n", "returncode": 0},
+                {"stdout": fake_scan_output(), "returncode": 0},
+            ],
+        )
+    )
+    settings_copy["inventory"] = compact_scan_inventory()
+    write_json(temp_settings, settings_copy)
+
+    noninteractive = run_tool(["configure-key", "--settings", str(temp_settings), "--server", "repair_1"], expected=1)
+    assert_contains(noninteractive.stderr, "--interactive", "configure-key noninteractive error")
+
+    before_decline = json.dumps(load_ref(server_list), sort_keys=True)
+    decline_result = run_tool(
+        ["configure-key", "--settings", str(temp_settings), "--server", "repair_1", "--interactive"],
+        expected=3,
+        input_text="id_repair_decline\ngenerate\ny\nempty\nn\n",
+    )
+    assert_contains(decline_result.stdout, f"key_generation_target: {key_dir / 'id_repair_decline'}", "configure-key decline output")
+    assert_contains(decline_result.stdout, "key_generation: created", "configure-key decline output")
+    assert_contains(decline_result.stdout, "authorized_keys", "configure-key decline output")
+    assert_contains(decline_result.stdout, "configuration_status: cancelled", "configure-key decline output")
+    if before_decline != json.dumps(load_ref(server_list), sort_keys=True):
+        raise ValidationError("configure-key should not modify the server list before passwordless verification")
+
+    success_result = run_tool(
+        ["configure-key", "--settings", str(temp_settings), "--server", "repair_1", "--interactive"],
+        input_text="id_repair_success\ngenerate\ny\nempty\ny\n",
+    )
+    assert_contains(success_result.stdout, f"key_generation_target: {key_dir / 'id_repair_success'}", "configure-key success output")
+    assert_contains(success_result.stdout, "key_only_repair: verified", "configure-key success output")
+    assert_contains(success_result.stdout, "backup:", "configure-key success output")
+    assert_not_contains(success_result.stdout, "repair.example.invalid", "configure-key success output")
+    assert_not_contains(success_result.stdout, "codex", "configure-key success output")
+    updated = load_ref(server_list)["servers"][0]
+    preserved = {
+        "id": "repair_1",
+        "name": "Repair Validation",
+        "category": "General",
+        "functions": ["passwordless repair"],
+        "type": "ssh",
+        "host": "repair.example.invalid",
+        "port": 22,
+        "username": "codex",
+        "workdir": "~/workspace",
+        "enabled": True,
+        "notes": "preserve me",
+    }
+    for key, value in preserved.items():
+        if updated.get(key) != value:
+            raise ValidationError(f"configure-key changed non-key field {key}: {updated}")
+    if updated.get("key_name") != "id_repair_success":
+        raise ValidationError(f"configure-key did not write verified key_name: {updated}")
+    if updated.get("validation", {}).get("status") != "verified":
+        raise ValidationError(f"configure-key did not persist verified validation: {updated}")
+    if updated.get("workspace_check", {}).get("status") != "ok":
+        raise ValidationError(f"configure-key did not persist ok workspace status: {updated}")
+    if updated.get("software_scan", {}).get("status") != "ok":
+        raise ValidationError(f"configure-key did not refresh software scan: {updated}")
+
+    failure_list = write_json(tmp_dir / "repair-failure-server-list.json", load_ref(server_list))
+    failure_config = load_ref(failure_list)
+    failure_config["servers"][0]["key_name"] = "id_repair_success"
+    write_json(failure_list, failure_config)
+    failure_settings = copy_settings_with_server_list(settings, tmp_dir / "repair-failure-settings.json", failure_list)
+    failure_settings_copy = load_ref(failure_settings)
+    failure_settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(tmp_dir, [{"stderr": "Permission denied (publickey).\n", "returncode": 255}])
+    )
+    write_json(failure_settings, failure_settings_copy)
+    before_failure = json.dumps(load_ref(failure_list), sort_keys=True)
+    failure_result = run_tool(
+        ["configure-key", "--settings", str(failure_settings), "--server", "repair_1", "--interactive"],
+        expected=255,
+        input_text="id_repair_other\ngenerate\ny\nempty\ny\n",
+    )
+    assert_contains(failure_result.stdout, f"key_generation_target: {key_dir / 'id_repair_other'}", "configure-key failure output")
+    assert_contains(failure_result.stdout, "key_only_repair: verification_failed", "configure-key failure output")
+    assert_contains(failure_result.stdout, "configure-key", "configure-key failure output")
+    assert_not_contains(failure_result.stdout + failure_result.stderr, "repair.example.invalid", "configure-key failure output")
+    assert_not_contains(failure_result.stdout + failure_result.stderr, "codex", "configure-key failure output")
+    auth_failure_summary = "\n".join(
+        line for line in (failure_result.stdout + failure_result.stderr).splitlines() if "Permission denied" in line or "verification_failed" in line
+    )
+    assert_not_contains(auth_failure_summary, "id_repair_other", "configure-key failure auth summary")
+    if before_failure != json.dumps(load_ref(failure_list), sort_keys=True):
+        raise ValidationError("configure-key should not write candidate key_name after failed verification")
+
+    workspace_failure = run_tool(
+        ["workspace-check", "--settings", str(failure_settings), "--server", "repair_1"],
+        expected=255,
+    )
+    assert_contains(workspace_failure.stdout, "configure-key", "workspace-check auth failure guidance")
+    assert_not_contains(workspace_failure.stdout + workspace_failure.stderr, "repair.example.invalid", "workspace-check auth failure output")
+    assert_not_contains(workspace_failure.stdout + workspace_failure.stderr, "codex", "workspace-check auth failure output")
 
 
 def script_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
@@ -1783,6 +2038,8 @@ def skill_frontmatter_audit() -> None:
     required_body_phrases = [
         "ask the user in the conversation",
         "do not launch `configure --interactive`",
+        "do not launch `configure-key --interactive`",
+        "only changes key_name and validation caches",
         "pressing enter does not choose a default",
         "log in to the remote account once",
         "exec -- echo ok",
@@ -1803,6 +2060,8 @@ def skill_identity_audit() -> None:
         raise ValidationError("agents/openai.yaml default prompt must reference $erie-remote-ssh")
     required_prompt_terms = [
         "choices",
+        "configure-key",
+        "key-only",
         "mandatory software scan",
         "scan",
         "cached software",
@@ -1863,6 +2122,33 @@ def software_catalog_documentation_audit() -> None:
             raise ValidationError(f"software catalog documentation must mention {term!r}")
 
 
+def default_reports_path_audit(settings: dict[str, Any]) -> None:
+    expected_requests = SKILL_DIR / "reports" / "requests"
+    expected_downloads = SKILL_DIR / "reports" / "downloads"
+    actual_requests = remote_ssh.requests_dir(settings).resolve()
+    actual_downloads = remote_ssh.downloads_dir(settings).resolve()
+    if actual_requests != expected_requests.resolve():
+        raise ValidationError(f"default requests_dir must resolve to {expected_requests}, got {actual_requests}")
+    if actual_downloads != expected_downloads.resolve():
+        raise ValidationError(f"default downloads_dir must resolve to {expected_downloads}, got {actual_downloads}")
+    for path in [actual_requests, actual_downloads]:
+        try:
+            path.relative_to((SKILL_DIR / "reports").resolve())
+        except ValueError as exc:
+            raise ValidationError(f"default report artifact path must stay inside skill reports/: {path}") from exc
+    combined_docs = "\n".join(
+        [
+            (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8"),
+            (SKILL_DIR / "references" / "configuration.md").read_text(encoding="utf-8"),
+            (SKILL_DIR / "references" / "workflows.md").read_text(encoding="utf-8"),
+            (SKILL_DIR / "references" / "review-checklist.md").read_text(encoding="utf-8"),
+        ]
+    ).casefold()
+    for term in ["reports", "preserve", "update", "${skill_dir}/reports/requests", "${skill_dir}/reports/downloads"]:
+        if term not in combined_docs:
+            raise ValidationError(f"reports documentation must mention {term!r}")
+
+
 def skill_local_gitignore_audit() -> None:
     gitignore = SKILL_DIR / ".gitignore"
     if not gitignore.exists():
@@ -1875,6 +2161,7 @@ def skill_local_gitignore_audit() -> None:
     required = {
         "config/server_list.local.json",
         "config/server_list.local.json.bak.*",
+        "reports/",
         "requests/",
         "downloads/",
         "tmp/",
@@ -1898,6 +2185,7 @@ def repository_gitignore_audit() -> None:
     required = {
         "erie-remote-ssh/config/server_list.local.json",
         "erie-remote-ssh/config/server_list.local.json.bak.*",
+        "erie-remote-ssh/reports/",
         "erie-remote-ssh/requests/",
         "erie-remote-ssh/downloads/",
         "erie-remote-ssh/tmp/",
@@ -1932,10 +2220,233 @@ def release_file_count(path: Path) -> int:
         if not file_path.is_file():
             continue
         parts = {part.casefold() for part in file_path.relative_to(path).parts}
-        if "__pycache__" in parts or file_path.suffix.casefold() == ".pyc":
+        if ".git" in parts or "__pycache__" in parts or file_path.suffix.casefold() == ".pyc":
             continue
         count += 1
     return count
+
+
+def is_release_file(path: Path, root: Path) -> bool:
+    if not path.is_file():
+        return False
+    rel = path.relative_to(root)
+    parts = [part.casefold() for part in rel.parts]
+    name = path.name.casefold()
+    if ".git" in parts:
+        return False
+    if "__pycache__" in parts or path.suffix.casefold() == ".pyc":
+        return False
+    if any(part in {"reports", "requests", "downloads", "logs", "tmp"} for part in parts):
+        return False
+    if rel.as_posix() == "config/server_list.local.json":
+        return False
+    if name.startswith("server_list.local.json.bak") or ".bak." in name or name.endswith(".bak"):
+        return False
+    return True
+
+
+def release_file_bytes(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if is_release_file(path, root)
+    }
+
+
+def zip_file_bytes(zip_path: Path) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in sorted(archive.namelist()):
+            if name.endswith("/"):
+                continue
+            files[name] = archive.read(name)
+    return files
+
+
+def assert_release_trees_match(expected: dict[str, bytes], actual: dict[str, bytes], label: str) -> None:
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    mismatched = sorted(path for path in set(expected) & set(actual) if expected[path] != actual[path])
+    if missing or extra or mismatched:
+        raise ValidationError(
+            f"{label} does not match source release files. "
+            f"missing={missing[:5]} extra={extra[:5]} mismatched={mismatched[:5]}"
+        )
+
+
+def assert_utf8_markdown_bytes(data: bytes, label: str) -> str:
+    if data.startswith(b"\xef\xbb\xbf"):
+        raise ValidationError(f"{label} must be UTF-8 without BOM")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"{label} must decode as UTF-8: {exc}") from exc
+    if "\ufffd" in text:
+        raise ValidationError(f"{label} must not contain Unicode replacement characters")
+    return text
+
+
+def canary_value(text: str) -> str | None:
+    return ENCODING_CANARY if ENCODING_CANARY in text else None
+
+
+def assert_markdown_tree_utf8(root: Path, label: str) -> dict[str, str]:
+    canaries: dict[str, str] = {}
+    for file_path in sorted(root.rglob("*.md")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(root).as_posix()
+        text = assert_utf8_markdown_bytes(file_path.read_bytes(), f"{label}:{rel}")
+        found = canary_value(text)
+        if found:
+            canaries[rel] = found
+    return canaries
+
+
+def assert_markdown_zip_utf8(zip_path: Path) -> dict[str, str]:
+    canaries: dict[str, str] = {}
+    with zipfile.ZipFile(zip_path) as archive:
+        for name in sorted(archive.namelist()):
+            if name.endswith("/") or not name.casefold().endswith(".md"):
+                continue
+            data = archive.read(name)
+            text = assert_utf8_markdown_bytes(data, f"{zip_path.name}:{name}")
+            found = canary_value(text)
+            if found:
+                canaries[name] = found
+    return canaries
+
+
+def markdown_encoding_guard_tests(tmp_dir: Path) -> None:
+    valid = tmp_dir / "valid-canary.md"
+    valid.write_text(ENCODING_CANARY + "\n", encoding="utf-8")
+    assert_utf8_markdown_bytes(valid.read_bytes(), str(valid))
+
+    bom = tmp_dir / "bom.md"
+    bom.write_bytes(b"\xef\xbb\xbf# BOM\n")
+    try:
+        assert_utf8_markdown_bytes(bom.read_bytes(), str(bom))
+    except ValidationError as exc:
+        assert_contains(str(exc), "BOM", "BOM encoding guard")
+    else:
+        raise ValidationError("UTF-8 markdown guard accepted a BOM file")
+
+    invalid = tmp_dir / "invalid.md"
+    invalid.write_bytes(b"# invalid utf8: \xff\n")
+    try:
+        assert_utf8_markdown_bytes(invalid.read_bytes(), str(invalid))
+    except ValidationError as exc:
+        assert_contains(str(exc), "UTF-8", "invalid UTF-8 guard")
+    else:
+        raise ValidationError("UTF-8 markdown guard accepted invalid UTF-8 bytes")
+
+    replacement = tmp_dir / "replacement.md"
+    replacement.write_text("bad replacement \ufffd\n", encoding="utf-8")
+    try:
+        assert_utf8_markdown_bytes(replacement.read_bytes(), str(replacement))
+    except ValidationError as exc:
+        assert_contains(str(exc), "replacement", "replacement character guard")
+    else:
+        raise ValidationError("UTF-8 markdown guard accepted replacement characters")
+
+
+def markdown_encoding_artifact_audit() -> None:
+    source_canary = assert_markdown_tree_utf8(SKILL_DIR, "source skill")
+    canary_path = "references/configuration.md"
+    if source_canary.get(canary_path) != ENCODING_CANARY:
+        raise ValidationError(f"{canary_path} must contain the Chinese UTF-8 encoding canary")
+
+    dist_root = ROOT / "dist"
+    dist_skill = dist_root / "erie-remote-ssh"
+    if dist_skill.exists():
+        dist_canary = assert_markdown_tree_utf8(dist_skill, "dist directory")
+        if dist_canary.get(canary_path) != ENCODING_CANARY:
+            raise ValidationError("dist directory markdown canary does not match source")
+
+    zip_path = dist_root / "erie-remote-ssh.zip"
+    if zip_path.exists():
+        zip_canary = assert_markdown_zip_utf8(zip_path)
+        if zip_canary.get(canary_path) != ENCODING_CANARY:
+            raise ValidationError("dist zip markdown canary does not match source")
+
+
+def release_artifact_consistency_audit() -> None:
+    if os.environ.get("ERIE_REMOTE_SSH_SKIP_ISOLATED_VALIDATION") == "1":
+        return
+    dist_root = ROOT / "dist"
+    dist_skill = dist_root / "erie-remote-ssh"
+    zip_path = dist_root / "erie-remote-ssh.zip"
+    if not dist_skill.exists() or not zip_path.exists():
+        raise ValidationError("dist directory and zip artifact must exist; run scripts/build_release.py")
+    source_files = release_file_bytes(SKILL_DIR)
+    assert_release_trees_match(source_files, release_file_bytes(dist_skill), "dist directory artifact")
+    assert_release_trees_match(source_files, zip_file_bytes(zip_path), "dist zip artifact")
+
+
+def installed_skill_path() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    return root / "skills" / "erie-remote-ssh"
+
+
+def installed_skill_audit() -> None:
+    if os.environ.get("ERIE_REMOTE_SSH_SKIP_ISOLATED_VALIDATION") == "1":
+        return
+    if SKILL_DIR.name != "erie-remote-ssh":
+        return
+    installed = installed_skill_path()
+    if not installed.exists() or installed.resolve() == SKILL_DIR.resolve():
+        return
+    key_files = [
+        "SKILL.md",
+        "agents/openai.yaml",
+        "references/configuration.md",
+        "references/workflows.md",
+        "references/review-checklist.md",
+        "scripts/remote_ssh.py",
+        "scripts/validate_remote_ssh.py",
+    ]
+    for rel in key_files:
+        source_path = SKILL_DIR / rel
+        installed_path = installed / rel
+        if not installed_path.exists():
+            raise ValidationError(f"installed skill missing {rel}: {installed}")
+        if source_path.read_bytes() != installed_path.read_bytes():
+            raise ValidationError(f"installed skill is stale for {rel}: {installed}")
+    installed_text = "\n".join(
+        (installed / rel).read_text(encoding="utf-8")
+        for rel in ["SKILL.md", "references/configuration.md", "references/workflows.md", "references/review-checklist.md"]
+    )
+    required = ["configure-key", ENCODING_CANARY, "field-menu"]
+    for marker in required:
+        if marker not in installed_text:
+            raise ValidationError(f"installed skill missing current marker {marker!r}: {installed}")
+
+
+def gitattributes_encoding_audit() -> None:
+    required = {
+        ".gitattributes": "working-tree-encoding=UTF-8",
+        ".gitignore": "working-tree-encoding=UTF-8",
+        "VERSION": "working-tree-encoding=UTF-8",
+        "*.md": "working-tree-encoding=UTF-8",
+        "*.json": "working-tree-encoding=UTF-8",
+        "*.yaml": "working-tree-encoding=UTF-8",
+    }
+    if os.environ.get("ERIE_REMOTE_SSH_SKIP_ISOLATED_VALIDATION") == "1" and not (ROOT / ".gitattributes").exists():
+        return
+    paths = [ROOT / ".gitattributes"]
+    dist_gitattributes = ROOT / "dist" / ".gitattributes"
+    if dist_gitattributes.parent.exists():
+        paths.append(dist_gitattributes)
+    for path in paths:
+        if not path.exists():
+            if path == ROOT / ".gitattributes" and not (ROOT / ".git").exists():
+                continue
+            raise ValidationError(f"missing gitattributes file: {path}")
+        text = path.read_text(encoding="utf-8")
+        for pattern, attribute in required.items():
+            if pattern not in text or attribute not in text:
+                raise ValidationError(f"{path} must declare {pattern} {attribute}")
 
 
 def release_manifest_audit(version: str) -> None:
@@ -1964,8 +2475,8 @@ def release_manifest_audit(version: str) -> None:
         raise ValidationError("release manifest name must be erie-remote-ssh")
     if manifest.get("version") != version:
         raise ValidationError(f"release manifest version must match VERSION {version}")
-    if manifest.get("source_branch") != "master":
-        raise ValidationError("release manifest source_branch must be master")
+    if manifest.get("source_branch") not in {"main", "master"}:
+        raise ValidationError("release manifest source_branch must be main or master")
     if manifest.get("release_branch") != "release":
         raise ValidationError("release manifest release_branch must be release")
     source_commit = str(manifest.get("source_commit", ""))
@@ -1987,6 +2498,8 @@ def release_manifest_audit(version: str) -> None:
     excludes = manifest.get("excludes")
     if not isinstance(excludes, list) or "config/server_list.local.json" not in excludes:
         raise ValidationError("release manifest excludes must include config/server_list.local.json")
+    if "reports/" not in excludes:
+        raise ValidationError("release manifest excludes must include reports/")
 
 
 def design_pattern_audit() -> None:
@@ -2004,6 +2517,7 @@ def design_pattern_audit() -> None:
         "scripts/remote_ssh.py",
         "config/server_list.template.json",
         "references/review-checklist.md",
+        "configure-key",
         "--accept-new-host-key",
         "explicitly",
     ]
@@ -2135,18 +2649,24 @@ def main() -> int:
     tmp_dir.mkdir(parents=True)
     try:
         version = skill_version()
+        markdown_encoding_guard_tests(tmp_dir)
+        markdown_encoding_artifact_audit()
+        release_artifact_consistency_audit()
+        installed_skill_audit()
+        gitattributes_encoding_audit()
         release_manifest_audit(version)
         skill_frontmatter_audit()
         skill_identity_audit()
         extraneous_docs_audit()
         references_linked_audit()
         software_catalog_documentation_audit()
+        default_reports_path_audit(settings)
         skill_local_gitignore_audit()
         repository_gitignore_audit()
         design_pattern_audit()
         template_tests()
         ref_dependency_audit()
-        server_list = args.server_list.resolve() if args.server_list else create_validation_server_list(tmp_dir)
+        server_list = create_validation_server_list(tmp_dir)
         ref_config = load_ref(server_list)
         run_validator(skill_validator)
         positive_tests(settings, settings_path, server_list, ref_config)
@@ -2160,6 +2680,7 @@ def main() -> int:
         configuration_gate_tests(settings, tmp_dir)
         request_and_path_tests(settings, settings_path, server_list, ref_config, tmp_dir)
         passwordless_setup_tests(settings, tmp_dir)
+        key_only_repair_tests(settings, tmp_dir)
         script_tests(settings, tmp_dir)
         config_override_tests(settings, settings_path, server_list, skill_validator, tmp_dir)
         script_layout_audit()
@@ -2168,7 +2689,8 @@ def main() -> int:
         if args.with_ssh:
             if args.server_list is None:
                 raise ValidationError("--with-ssh requires --server-list for a real SSH configuration.")
-            ssh_tests(settings, settings_path, server_list, tmp_dir)
+            real_server_list = args.server_list.resolve()
+            ssh_tests(settings, settings_path, real_server_list, tmp_dir)
     finally:
         cleanup_generated_dirs(tmp_dir, cleanup_roots)
 

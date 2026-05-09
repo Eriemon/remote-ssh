@@ -1,5 +1,7 @@
 # Erie Remote SSH Settings
 
+Encoding canary: 编码校验：中文内容应保持 UTF-8，无乱码。
+
 Use `config/defaults.json` to keep paths and validation choices out of scripts.
 
 ## Contents
@@ -48,8 +50,8 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `version`: Required integer. Use `1`.
 - `paths.default_server_list`: Server list JSON used when no CLI override is provided. The bundled default points to skill-local `config/server_list.local.json`.
 - `paths.validation_tmp_dir`: Temporary root directory used by validation. Each run creates and removes its own child directory.
-- `paths.requests_dir`: Directory for generated request JSON files. Keep it git-ignored.
-- `paths.downloads_dir`: Directory for `file-download` targets. Local download paths must stay inside this directory.
+- `paths.requests_dir`: Directory for generated request JSON files. The bundled default is `${skill_dir}/reports/requests`; keep it git-ignored.
+- `paths.downloads_dir`: Directory for `file-download` targets. The bundled default is `${skill_dir}/reports/downloads`; local download paths must stay inside this directory.
 - `paths.upload_roots`: Non-empty list of local directories allowed as `request-upload --local` sources. Defaults to `${project_root}`. Use explicit workspace or data directories for uploads outside the skill project; do not configure a filesystem root or the whole user home directory.
 - `tools.ssh_client`: SSH executable name or path.
 - `tools.scp_client`: SCP executable name or path.
@@ -214,7 +216,7 @@ Guided configuration can generate a local Ed25519 key when an enabled server ent
 
 - It uses `tools.ssh_keygen`, defaulting to `ssh-keygen`.
 - It resolves relative `key_name` values against `default_key_dir`, normally `~/.ssh`.
-- It prints the target path redacted by default; use `--show-sensitive` only when the user explicitly needs the path or public key content.
+- It prints the local private-key target path before writing so the user can confirm the exact destination; public-key content remains hidden unless `--show-sensitive` is explicitly used.
 - It refuses to overwrite existing private keys.
 - It asks the user to confirm before writing.
 - It asks whether the passphrase should be empty or custom. Custom passphrases are read with hidden input and are not written to config or logs.
@@ -236,8 +238,8 @@ These scripts now call `configure --interactive`. The agent must ask the user be
   "paths": {
     "default_server_list": "${skill_dir}/config/server_list.local.json",
     "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
-    "requests_dir": "${project_root}/requests",
-    "downloads_dir": "${project_root}/downloads",
+    "requests_dir": "${skill_dir}/reports/requests",
+    "downloads_dir": "${skill_dir}/reports/downloads",
     "upload_roots": ["${project_root}", "${cwd}"]
   },
   "tools": {
@@ -258,6 +260,8 @@ These scripts now call `configure --interactive`. The agent must ask the user be
 Keep sensitive server values in the server list, not in settings documentation.
 
 ## Request, Download, and Upload Directories
+
+The bundled runtime artifact root is `erie-remote-ssh/reports`. It is intentionally git-ignored and may contain request audit JSON and downloaded files. Before updating or replacing an installed skill directory from GitHub, a local directory, a release artifact, or another source, inspect the target `reports` directory. If it exists, ask the user whether to clear it or preserve it; preserve it unless the user explicitly confirms cleanup.
 
 Request files are local audit artifacts. They record operation type, server id, relative paths, reason, risks, and timestamp; they do not store real hostnames, usernames, key names, key paths, or ports.
 

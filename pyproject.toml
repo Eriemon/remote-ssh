@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "remote-ssh-skill"
-version = "0.1.5"
+version = "0.1.6"
 description = "Agent-usable Codex skill for conservative SSH-based development and test workflows."
 readme = "README.md"
 requires-python = ">=3.10"

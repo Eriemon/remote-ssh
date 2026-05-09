@@ -11,7 +11,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-1f6feb"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2f81f7"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.5-7c3aed">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.1.6-7c3aed">
   <a href="SKILL.md"><img alt="Agent Skill" src="https://img.shields.io/badge/agent-skill-16a34a"></a>
   <a href="references/review-checklist.md"><img alt="Safety" src="https://img.shields.io/badge/default-redacted-f59e0b"></a>
 </p>
@@ -36,6 +36,7 @@
 
 - SSH 服务器发现、引导式配置、server-list 校验和目标选择。
 - 密钥/免密 SSH 就绪检查，但不修改 `~/.ssh`。
+- 通过 `configure-key --interactive` 对现有条目做引导式 key-only 修复。
 - 远程 `~/workspace` 检查和限定在 `workdir` 内的文件操作。
 - 命令、上传、建目录、删除等写操作的 request 审阅流程。
 - Python、Conda、CUDA、GCC/G++、CMake、Vivado、Vitis 等软件可用性缓存查询，包括多版本扫描结果。
@@ -94,6 +95,8 @@ python .\scripts\remote_ssh.py choices
 
 `workspace-check` 会把 validation 和 workspace 状态写回选中的私有 server list，然后刷新 `software_scan` 缓存。远端工具安装发生变化时运行 `scan-software`，再用 `software` 或 `software --name <tool>` 在不重新连接的情况下查看缓存可用性。上传请求受 `paths.upload_roots` 限制，默认只允许项目根目录。
 
+只有在用户明确选择引导式修复，且现有服务器条目的 key 引用或免密登录需要修复时，才使用 `configure-key --interactive`。内置 request 和 download 运行产物默认写到 `${skill_dir}/reports` 下；替换已安装 skill 前，默认保留已有 `reports/` 目录，除非用户明确要求清理。
+
 ## 隐私默认值
 
 仓库公开文件不保存真实账号或主机信息。默认本地配置路径是 `${skill_dir}/config/server_list.local.json`，该文件不会随仓库发布。
@@ -106,6 +109,7 @@ python .\scripts\remote_ssh.py choices
 - `config/*.bak` 和 `config/*.bak.*`
 - `requests/`
 - `downloads/`
+- `reports/`
 - `tmp/`
 - `logs/`
 - `*.log`
@@ -124,6 +128,7 @@ python .\scripts\remote_ssh.py discover
 python .\scripts\remote_ssh.py choices
 python .\scripts\remote_ssh.py configure --interactive
 python .\scripts\remote_ssh.py update-server --server <id-or-name> --interactive
+python .\scripts\remote_ssh.py configure-key --server <id-or-name> --interactive
 python .\scripts\remote_ssh.py check --server <id-or-name>
 python .\scripts\remote_ssh.py workspace-check --server <id-or-name>
 python .\scripts\remote_ssh.py scan-software --server <id-or-name>
@@ -167,7 +172,7 @@ python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server
   author       = {Jiyuan Liu},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
-  version      = {0.1.5},
+  version      = {0.1.6},
   date         = {2026-05-09},
   url          = {https://github.com/Eriemon/remote-ssh},
   license      = {Apache-2.0},

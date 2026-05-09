@@ -3,8 +3,8 @@
   "paths": {
     "default_server_list": "${skill_dir}/config/server_list.local.json",
     "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
-    "requests_dir": "${project_root}/requests",
-    "downloads_dir": "${project_root}/downloads",
+    "requests_dir": "${skill_dir}/reports/requests",
+    "downloads_dir": "${skill_dir}/reports/downloads",
     "upload_roots": ["${project_root}"]
   },
   "tools": {

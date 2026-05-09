@@ -2,6 +2,14 @@
 
 Use this checklist before declaring an Erie Remote SSH task or skill change fully validated.
 
+## Contents
+
+- Skill Structure
+- Safety and Privacy
+- Schema and Selection
+- Execution
+- Validation
+
 ## Skill Structure
 
 - `SKILL.md` frontmatter contains only `name` and `description`.
@@ -14,11 +22,16 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Software inventory probes, multi-version PATH scans, executable globs, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
 - Discovery and add-server workflows are represented in `SKILL.md` without bloating the skill body.
 - The configuration gate is documented at both levels: the agent asks the user in conversation first, and the CLI requires explicit manual/script/cancel input before any server-list mutation.
+- Key-only repair is documented at both levels: the agent asks the user before running `configure-key --interactive`, and the CLI writes only after candidate-key verification.
 - Platform wrappers stay thin and delegate to `scripts/remote_ssh.py`.
 - Platform-specific `.bat`, `.sh`, and `.ps1` wrappers live under `scripts/bat`, `scripts/shell`, or `scripts/powershell`; only Python helpers live directly in `scripts`.
 - Runtime configuration does not depend on a repository-level `ref` directory.
 - `config/server_list.template.json` exists and contains only placeholder, non-sensitive values.
-- Skill-local `.gitignore` ignores `config/server_list.local.json`, backups, request/download/tmp/log output, and complements repository-level ignores.
+- Markdown files are UTF-8 without BOM, contain no replacement characters, and the Chinese encoding canary round-trips through source, dist directory, and zip artifacts.
+- Root and release `.gitattributes` declare UTF-8 working-tree encoding for `.gitattributes`, `.gitignore`, Markdown, YAML, and JSON text files.
+- Release artifacts are built with `scripts/build_release.py`; source, `dist/erie-remote-ssh`, `dist/erie-remote-ssh.zip`, and the installed skill key files match byte-for-byte when installed validation is enabled.
+- Skill-local `.gitignore` ignores `config/server_list.local.json`, backups, `reports/`, legacy request/download roots, tmp/log output, and complements repository-level ignores.
+- Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, the operator asks whether to clear an existing `reports` directory and preserves it by default.
 
 ## Safety and Privacy
 
@@ -32,6 +45,8 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `discover` reads configuration only and does not scan networks or probe unknown hosts.
 - `add-server --interactive` does not generate keys without explicit user confirmation, modify SSH config, or scan networks; enabled additions connect only for the mandatory read-only software scan.
 - `configure --interactive`, `add-server --interactive`, and `update-server --interactive` ask how to handle a missing private key before writing an enabled unusable entry.
+- `configure-key --interactive` is limited to `key_name`, `validation`, `workspace_check`, and `software_scan`; it must not modify host, port, username, workdir, enabled, category, functions, or notes.
+- `configure-key --interactive` generates local keys only after explicit confirmation, prints `authorized_keys` guidance, verifies passwordless SSH before JSON write-back, and leaves the server list unchanged on cancellation or verification failure.
 - Failed mandatory scans are cached as `software_scan.status: failed` without discarding the server entry.
 - `workspace-check` creates a server-list backup, writes validation/workspace metadata, and refreshes `software_scan` only when invoked explicitly.
 - `setup-key` does not generate keys, copy public keys, run `ssh-copy-id`, edit `authorized_keys`, modify `~/.ssh`, or rewrite SSH config.
@@ -39,7 +54,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Server-list backups are ignored by git and do not expose sensitive details through committed files.
 - Request files do not contain real host, username, port, key name, or key path values.
 - `choices` output is redacted by default and does not connect, scan, or write the server list.
-- Download and request directories are ignored or kept out of commits.
+- Download and request directories default under `reports/` and are ignored or kept out of commits.
 
 ## Schema and Selection
 
@@ -54,10 +69,10 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `init-config` creates the v1 empty list and refuses overwrite unless `--force` is explicit.
 - `configure --interactive` offers manual, script, and cancel modes without a default before changing server configuration.
 - Existing-server guided configuration shows a redacted server summary, then requires an explicit add/update/cancel action without a default.
-- Interactive add rejects duplicate id/name selectors, invalid ports, empty required fields, and non-boolean enabled values.
+- Interactive add groups prompts, accepts category/functions/notes metadata, shows a redacted summary, and rejects duplicate id/name selectors, invalid ports, empty required fields, and non-boolean enabled values.
 - Interactive add warns on same-host entries and defaults to cancelling exact host+username+port duplicates.
 - Interactive add runs and caches a software scan for enabled servers.
-- Interactive update preserves the selected server id, validates edited fields, creates a backup, and refreshes cached software for enabled entries.
+- Interactive update supports numbered selection through `configure`, field-menu edits, selected-field prompting, `all`, `done`, redacted save confirmation, and `cancel`; metadata-only edits preserve validation/workspace caches and do not force missing-key repair or software scans.
 - Remote file paths reject empty paths, absolute paths, drive paths, backslashes, and parent traversal.
 - Built-in write/delete/upload operations resolve remote targets under `workdir` again at execution time.
 - Upload local source paths resolve under configured `paths.upload_roots`; request execution revalidates the recorded upload root and relative path.
@@ -72,6 +87,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `exec` and `inventory` use positive timeouts.
 - `scan-software` uses a positive timeout and writes only the local `software_scan` cache.
 - `workspace-check` uses a positive timeout, writes `validation` / `workspace_check`, and auto-refreshes `software_scan` after successful workspace validation.
+- `workspace-check` and `exec -- echo ok` authentication failures include guidance to ask before running key-only `configure-key --interactive` repair.
 - `software` reads cached install status, prints multi-version rows from cached `versions`, and does not connect to the remote host.
 - Remote commands are short and non-destructive unless the user clearly requested otherwise.
 - Missing optional inventory tools degrade to `not detected`.
@@ -87,13 +103,16 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Run configuration tests for default settings, copied settings, environment-variable paths, and CLI overrides.
 - Run discovery and add-server tests for missing lists, empty lists, enabled servers, backups, duplicate entries, same-host prompts, invalid ports, and empty required fields.
 - Run configure/update tests for manual mode, script mode, cancel mode, explicit no-default prompts, missing-key generate/disable/cancel branches, fake `ssh_keygen`, and server-list backups.
+- Run encoding tests for UTF-8 no-BOM Markdown, no replacement characters, Chinese canary consistency, and source/dist/zip byte consistency.
 - Run software catalog tests for duplicate ids, invalid `path_scan`, unsafe executable globs, invalid directory scans, cached named-tool queries, multi-version table output, scan write-back, workspace-check write-back, and add-server scan write-back.
 - Run passwordless setup tests for existing private/public key files and missing-key guidance.
+- Run key-only repair tests for missing keys, generated keys, remote public-key confirmation, failed authentication, no-write failure behavior, and preservation of non-key server fields.
 - Run configure script tests for Windows batch and POSIX shell where the shell runner is available.
 - Run request and path-boundary tests for upload, mkdir, delete, command risk summaries, invalid paths, and missing `--execute`.
 - Run upload-root tests for default roots, external configured roots, `${cwd}`, sensitive path confirmation, and tampered request JSON.
 - Run real SSH file tests for workspace check, upload, list, stat, download, command request, and cleanup when network access is allowed.
 - Run wrapper tests for `.bat`, `.ps1`, and `.sh` entry points where the runner exists.
 - Run isolated no-ref validation from a temporary copy that does not contain a repository-level `ref` directory.
+- Run installed-skill validation after copying the refreshed artifact into `$CODEX_HOME/skills/erie-remote-ssh`; stale installed files must fail validation.
 - Confirm `--with-ssh` requires an explicit real `--server-list`; without one, only offline skill development confidence can be claimed.
 - Confirm `git status` is clean after validation.

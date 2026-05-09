@@ -2,6 +2,7 @@ config/server_list.local.json
 config/server_list.local.json.bak.*
 config/*.bak
 config/*.bak.*
+reports/
 requests/
 downloads/
 tmp/

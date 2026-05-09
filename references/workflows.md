@@ -10,6 +10,7 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 - Add a Server When None Is Available
 - Use a Server List JSON
 - Locate and Inspect Targets
+- Update or Replace the Skill
 - Local Precheck
 - Scan and Query Software
 - File Operations
@@ -45,9 +46,15 @@ Discovery outcomes:
 
 `discover --json` gives stable machine-readable fields for automation scripts. Discovery reads configured JSON only; it does not scan networks or probe unknown hosts.
 
+## Update or Replace the Skill
+
+Before updating or replacing an installed `erie-remote-ssh` directory from GitHub, a local directory, a release artifact, or another source, inspect `<target-skill-dir>/reports`. If it exists, ask the user whether to clear it or preserve it. Preserve it by default unless the user explicitly confirms cleanup.
+
+`reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests` and downloads to `${skill_dir}/reports/downloads`; custom settings may override these paths.
+
 ## Choose Configuration Mode
 
-Before creating or changing server configuration, fixing a missing key reference, creating an initial server list, handling a list with no enabled servers, or reworking an unusable server entry, ask the user in the conversation whether they want manual instructions, guided script configuration, or cancellation. Do not run the guided script, direct add/update commands, or a platform wrapper until the user explicitly chooses guided script configuration.
+Before creating or changing server configuration, fixing a missing key reference, repairing failed passwordless SSH, creating an initial server list, handling a list with no enabled servers, or reworking an unusable server entry, ask the user in the conversation whether they want manual instructions, guided script configuration, or cancellation. Do not run the guided script, `configure-key --interactive`, direct add/update commands, or a platform wrapper until the user explicitly chooses guided script configuration.
 
 Use the unified guided entry point:
 
@@ -65,7 +72,7 @@ Configuration mode meanings:
 
 The CLI also asks for this mode and has no default. Pressing Enter without a mode repeats the prompt instead of choosing `script`. If servers already exist, guided mode lists a redacted server summary, then requires an explicit `add`, `update`, or `cancel` choice.
 
-Do not respond to a missing private key by only giving a raw `ssh-keygen` command. Offer the guided configuration flow so the user can choose key generation, saving the entry disabled, or cancellation.
+Do not respond to a missing private key by only giving a raw `ssh-keygen` command. For a new or full server edit, offer the guided configuration flow so the user can choose key generation, saving the entry disabled, or cancellation. For an existing server where only the key or passwordless login is broken, offer key-only repair with `configure-key --interactive`; it only changes `key_name` and validation caches after successful verification.
 
 ## Add a Server When None Is Available
 
@@ -92,7 +99,11 @@ python <skill-dir>\scripts\remote_ssh.py configure --settings <settings> --inter
 python <skill-dir>\scripts\remote_ssh.py discover --settings <settings>
 ```
 
-Adding or updating an enabled server writes the configured server list, creates a backup before replacing an existing file, validates schema, then runs a mandatory read-only software scan over SSH. The scan must complete before the add flow reports `added:` or the update flow reports `updated:`; failures are cached as `software_scan.status: failed`.
+Adding an enabled server, enabling a server, or changing host, port, username, key_name, or workdir writes the configured server list, creates a backup before replacing an existing file, validates schema, then runs a mandatory read-only software scan over SSH. The scan must complete before the add flow reports `added:` or connection-changing update reports `updated:`; failures are cached as `software_scan.status: failed`. Name/category/functions/notes-only updates show a redacted summary, require `save_server_record`, preserve validation caches, and do not force a key check or scan.
+
+`add-server --interactive` prompts in three groups: connection fields, key/workdir fields, and metadata. Metadata includes optional `category`, `functions`, and `notes`; enter functions as comma- or semicolon-separated labels. The helper prints a redacted summary and requires `save_server_record` confirmation before key handling or JSON write-back.
+
+`update-server --interactive` opens a field menu. Use `show` to inspect the candidate record, a field name to edit one value, `all` to walk every editable field, `done` to review a redacted summary and confirm `save_server_record`, or `cancel` to leave the server list unchanged. `configure --interactive` shows numbered server choices before `update`; the selector accepts a number, id, or name. Only host, port, username, key_name, and workdir edits clear validation/workspace/software caches; name/category/functions/notes-only edits preserve them.
 
 When an enabled entry points to a missing private key, guided configuration prompts for:
 
@@ -101,6 +112,20 @@ When an enabled entry points to a missing private key, guided configuration prom
 - `cancel`: leave the server list unchanged.
 
 Generated keys are local only. The helper prints public-key installation guidance for the remote `authorized_keys` file; it does not edit the remote account, run `ssh-copy-id`, or bypass the first manual login. The user must log in once using a password, console, existing jump host, or administrator path, append the public key to `~/.ssh/authorized_keys`, then return to run `setup-key`, `check`, and `exec -- echo ok`.
+
+## Repair an Existing Key Only
+
+Use this when an existing server entry has the right host, port, username, and workdir, but `check` reports `key file not found` or `workspace-check` / `exec -- echo ok` fails with `Permission denied`, `publickey`, or another key-based authentication error.
+
+First ask the user whether to run guided key-only repair. If they choose it:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py configure-key --settings <settings> --server <id-or-name> --interactive
+```
+
+This flow can confirm or update `key_name`, generate a local Ed25519 key after explicit confirmation, print `authorized_keys` guidance, and ask the user to confirm that the public key was installed remotely. It verifies the configured `workdir` with the candidate key before any JSON write. On success it backs up the server list and writes only `key_name`, `validation`, `workspace_check`, and refreshed `software_scan`. On cancellation or verification failure, it leaves the server list unchanged.
+
+Do not use this flow to correct host, port, username, workdir, enabled state, category, functions, or notes. Use full guided configuration for those fields.
 
 The default workdir prompt is controlled by `ssh.default_workdir` and is `~/workspace` in the bundled settings. The written server entry still stores an explicit `workdir`.
 
@@ -172,6 +197,8 @@ python <skill-dir>\scripts\remote_ssh.py setup-key --settings <settings> --serve
 
 If `setup-key` reports a missing private key, offer `configure --interactive --server <id-or-name>` rather than only giving manual key-generation commands.
 
+If the target is an existing entry and only the key or passwordless login needs repair, offer `configure-key --interactive --server <id-or-name>` instead. It only changes `key_name` and validation caches after successful verification.
+
 Then verify the remote working directory:
 
 ```powershell
@@ -215,7 +242,7 @@ python <skill-dir>\scripts\remote_ssh.py file-stat --settings <settings> --serve
 python <skill-dir>\scripts\remote_ssh.py file-download --settings <settings> --server <id-or-name> --remote src/main.py --local copied/main.py
 ```
 
-Remote paths must be relative to `workdir`. Absolute paths, drive paths, backslashes, empty paths, and `..` are rejected. Downloads write only inside `paths.downloads_dir`.
+Remote paths must be relative to `workdir`. Absolute paths, drive paths, backslashes, empty paths, and `..` are rejected. Downloads write only inside `paths.downloads_dir`, which defaults to `${skill_dir}/reports/downloads`.
 
 Upload sources must stay inside configured `paths.upload_roots`, which defaults to `${project_root}`. To upload from the current workspace or a data directory outside the skill project, use a custom settings file with explicit roots, for example `"upload_roots": ["${cwd}", "F:/work/data"]`. Do not use a filesystem root or the whole user home directory as an upload root.
 
@@ -227,6 +254,8 @@ python <skill-dir>\scripts\remote_ssh.py request-mkdir --settings <settings> --s
 python <skill-dir>\scripts\remote_ssh.py request-delete --settings <settings> --server <id-or-name> --path tmp/file.txt --reason "cleanup"
 python <skill-dir>\scripts\remote_ssh.py run-request --settings <settings> --request <request.json> --execute
 ```
+
+With bundled defaults, these request files are written under `${skill_dir}/reports/requests`.
 
 For sensitive local sources such as `.codex`, `.ssh`, private-key-like files, `.env`, `known_hosts`, `authorized_keys`, or system directories, both steps require explicit acknowledgement:
 

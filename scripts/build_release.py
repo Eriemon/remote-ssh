@@ -18,8 +18,6 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 ROOT = SKILL_DIR.parent
 DIST_ROOT = ROOT / "dist"
-DIST_SKILL = DIST_ROOT / "erie-remote-ssh"
-ZIP_PATH = DIST_ROOT / "erie-remote-ssh.zip"
 MANIFEST_PATH = DIST_ROOT / "manifest.json"
 ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
 
@@ -36,6 +34,8 @@ def should_exclude(path: Path, root: Path) -> bool:
         return True
     if rel.as_posix() == "config/server_list.local.json":
         return True
+    if name == "project.local.json":
+        return True
     if name.startswith("server_list.local.json.bak") or ".bak." in name or name.endswith(".bak"):
         return True
     return False
@@ -50,13 +50,39 @@ def remove_readonly(func, path, _exc_info) -> None:
     func(path)
 
 
+def skill_version() -> str:
+    return (SKILL_DIR / "VERSION").read_text(encoding="utf-8").strip()
+
+
+def artifact_base_name() -> str:
+    return f"erie-remote-ssh-v{skill_version()}"
+
+
+def dist_skill_path() -> Path:
+    return DIST_ROOT / artifact_base_name()
+
+
+def zip_path() -> Path:
+    return DIST_ROOT / f"{artifact_base_name()}.zip"
+
+
+def remove_legacy_artifacts() -> None:
+    legacy_dir = DIST_ROOT / "erie-remote-ssh"
+    legacy_zip = DIST_ROOT / "erie-remote-ssh.zip"
+    if legacy_dir.exists():
+        shutil.rmtree(legacy_dir, onerror=remove_readonly)
+    if legacy_zip.exists():
+        legacy_zip.unlink()
+
+
 def copy_release_tree() -> None:
-    if DIST_SKILL.exists():
-        shutil.rmtree(DIST_SKILL, onerror=remove_readonly)
-    DIST_SKILL.parent.mkdir(parents=True, exist_ok=True)
+    dist_skill = dist_skill_path()
+    if dist_skill.exists():
+        shutil.rmtree(dist_skill, onerror=remove_readonly)
+    dist_skill.parent.mkdir(parents=True, exist_ok=True)
     for source in release_files(SKILL_DIR):
         rel = source.relative_to(SKILL_DIR)
-        target = DIST_SKILL / rel
+        target = dist_skill / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
 
@@ -82,11 +108,13 @@ def write_dist_gitattributes() -> None:
 
 
 def build_zip() -> None:
-    if ZIP_PATH.exists():
-        ZIP_PATH.unlink()
-    with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for source in release_files(DIST_SKILL):
-            rel = source.relative_to(DIST_SKILL).as_posix()
+    dist_skill = dist_skill_path()
+    artifact_zip = zip_path()
+    if artifact_zip.exists():
+        artifact_zip.unlink()
+    with zipfile.ZipFile(artifact_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for source in release_files(dist_skill):
+            rel = source.relative_to(dist_skill).as_posix()
             info = zipfile.ZipInfo(rel, ZIP_TIMESTAMP)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
@@ -114,12 +142,11 @@ def source_state() -> tuple[str, str, bool]:
     return branch, ("working-tree" if dirty else commit), dirty
 
 
-def skill_version() -> str:
-    return (SKILL_DIR / "VERSION").read_text(encoding="utf-8").strip()
-
-
 def write_manifest() -> None:
     branch, commit, dirty = source_state()
+    artifact_name = artifact_base_name()
+    dist_skill = dist_skill_path()
+    artifact_zip = zip_path()
     manifest = {
         "name": "erie-remote-ssh",
         "version": skill_version(),
@@ -127,17 +154,18 @@ def write_manifest() -> None:
         "source_commit": commit,
         "source_dirty": dirty,
         "release_branch": "release",
-        "directory_artifact": "erie-remote-ssh",
-        "zip_artifact": "erie-remote-ssh.zip",
-        "zip_sha256": file_sha256(ZIP_PATH),
-        "file_count": len(release_files(DIST_SKILL)),
+        "directory_artifact": artifact_name,
+        "zip_artifact": f"{artifact_name}.zip",
+        "zip_sha256": file_sha256(artifact_zip),
+        "file_count": len(release_files(dist_skill)),
         "release_created_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "validation_commands": [
-            r"python .\erie-remote-ssh\scripts\validate_remote_ssh.py",
-            r"python C:\Users\17677\.codex\skills\.system\skill-creator\scripts\quick_validate.py .\erie-remote-ssh",
+            fr"python .\{artifact_name}\scripts\validate_remote_ssh.py",
+            fr"python C:\Users\17677\.codex\skills\.system\skill-creator\scripts\quick_validate.py .\{artifact_name}",
         ],
         "excludes": [
             "config/server_list.local.json",
+            "project.local.json",
             "*.bak",
             "reports/",
             "requests/",
@@ -156,12 +184,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build Erie Remote SSH release artifacts.")
     parser.parse_args()
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
+    remove_legacy_artifacts()
     copy_release_tree()
     write_dist_gitattributes()
     build_zip()
     write_manifest()
-    print(f"built: {DIST_SKILL}")
-    print(f"zip: {ZIP_PATH}")
+    print(f"built: {dist_skill_path()}")
+    print(f"zip: {zip_path()}")
     print(f"manifest: {MANIFEST_PATH}")
     return 0
 

@@ -53,6 +53,9 @@ ACCEPT_NEW_HOST_KEY_OPTIONS = [
     "-o",
     "ConnectTimeout=10",
 ]
+PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
 class RemoteSshError(Exception):
     """Expected user-facing error."""
 
@@ -175,6 +178,32 @@ def default_workdir(settings: dict[str, Any]) -> str:
     value = settings_value(settings, "ssh", "default_workdir", default="~/workspace")
     if not isinstance(value, str) or not value.strip():
         raise RemoteSshError("Settings field ssh.default_workdir must be a non-empty string.")
+    return value.strip()
+
+
+def project_auto_discover(settings: dict[str, Any]) -> bool:
+    value = settings_value(settings, "projects", "auto_discover", default=True)
+    return bool(value)
+
+
+def project_config_dir(settings: dict[str, Any]) -> str:
+    value = settings_value(settings, "projects", "config_dir", default=".erie-remote-ssh")
+    if not isinstance(value, str) or not value.strip():
+        raise RemoteSshError("Settings field projects.config_dir must be a non-empty string.")
+    return value.strip()
+
+
+def project_config_names(settings: dict[str, Any]) -> list[str]:
+    value = settings_value(settings, "projects", "config_names", default=["project.local.json", "project.json"])
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise RemoteSshError("Settings field projects.config_names must be a list of non-empty strings.")
+    return [str(item).strip() for item in value]
+
+
+def project_workdir_template(settings: dict[str, Any]) -> str:
+    value = settings_value(settings, "projects", "default_workdir_template", default="~/workspace/${project_id}")
+    if not isinstance(value, str) or not value.strip():
+        raise RemoteSshError("Settings field projects.default_workdir_template must be a non-empty string.")
     return value.strip()
 
 
@@ -346,6 +375,15 @@ class Server:
         return self.id or self.name or "<unnamed>"
 
 
+@dataclass(frozen=True)
+class ProjectContext:
+    project_id: str
+    config_path: Path | None
+    data: dict[str, Any]
+    effective_workdir: str
+    workdir_source: str
+
+
 def load_config(path: Path) -> dict[str, Any]:
     data = load_json_file(path, "Config")
     if data.get("version") != 1:
@@ -405,6 +443,160 @@ def load_config_for_args(args: argparse.Namespace) -> tuple[dict[str, Any], dict
     settings = load_settings(args.settings)
     config_path = resolve_server_list_path(settings, args.config)
     return load_config(config_path), settings, config_path
+
+
+def validate_project_id(project_id: str) -> str:
+    value = project_id.strip()
+    if not value or value in {".", ".."} or not PROJECT_ID_PATTERN.fullmatch(value):
+        raise RemoteSshError("Project id must contain only letters, numbers, '_', '-', or '.'.")
+    return value
+
+
+def validate_remote_workdir(value: str) -> str:
+    workdir = value.strip()
+    if not workdir:
+        raise RemoteSshError("Project remote_workdir must be a non-empty string.")
+    if "\x00" in workdir or "\\" in workdir or re.match(r"^[A-Za-z]:", workdir):
+        raise RemoteSshError("Project remote_workdir must be a POSIX path.")
+    if workdir in {"~", "~/"}:
+        raise RemoteSshError("Project remote_workdir must identify a child directory.")
+    if "//" in workdir:
+        raise RemoteSshError("Project remote_workdir must not contain repeated separators.")
+    if not (workdir.startswith("~/") or workdir.startswith("/")):
+        raise RemoteSshError("Project remote_workdir must start with ~/ or /.")
+    if workdir == "/":
+        raise RemoteSshError("Project remote_workdir must not be the filesystem root.")
+    raw_parts = workdir[2:].split("/") if workdir.startswith("~/") else workdir[1:].split("/")
+    if not raw_parts or any(part in {"", ".", ".."} for part in raw_parts):
+        raise RemoteSshError("Project remote_workdir must not contain empty, '.', or '..' path segments.")
+    posix = PurePosixPath(workdir.replace("~", "/home-placeholder", 1) if workdir.startswith("~/") else workdir)
+    if posix.name in {"", ".", ".."} or any(part in {"", ".", ".."} for part in posix.parts[1:]):
+        raise RemoteSshError("Project remote_workdir must not contain empty, '.', or '..' path segments.")
+    return workdir
+
+
+def render_project_workdir(settings: dict[str, Any], project_id: str) -> str:
+    template = project_workdir_template(settings)
+    rendered = expand_placeholders(template, settings["_context"], {"project_id": project_id})
+    return validate_remote_workdir(rendered)
+
+
+def load_project_config(path: Path, settings: dict[str, Any], server: Server | None = None) -> dict[str, Any]:
+    data = load_json_file(path, "Project config")
+    if data.get("version") != 1:
+        raise RemoteSshError(f"Unsupported project config version: {data.get('version')!r}")
+    project_id = validate_project_id(str(data.get("project_id", "")))
+    data["project_id"] = project_id
+    remote_workdir = data.get("remote_workdir")
+    if remote_workdir is not None:
+        data["remote_workdir"] = validate_remote_workdir(str(remote_workdir))
+    else:
+        data["remote_workdir"] = render_project_workdir(settings, project_id)
+    servers = data.get("servers", {})
+    if servers is None:
+        servers = {}
+    if not isinstance(servers, dict):
+        raise RemoteSshError("Project config field servers must be an object.")
+    for selector, item in servers.items():
+        if not isinstance(selector, str) or not selector.strip():
+            raise RemoteSshError("Project config server keys must be non-empty strings.")
+        if not isinstance(item, dict):
+            raise RemoteSshError(f"Project config servers.{selector} must be an object.")
+        if "remote_workdir" in item:
+            item["remote_workdir"] = validate_remote_workdir(str(item["remote_workdir"]))
+    data["servers"] = servers
+    return data
+
+
+def discover_project_config(settings: dict[str, Any], cwd: Path | None = None) -> Path | None:
+    current = (cwd or Path.cwd()).resolve()
+    config_dir = project_config_dir(settings)
+    names = project_config_names(settings)
+    for directory in [current, *current.parents]:
+        for name in names:
+            candidate = directory / config_dir / name
+            if candidate.exists():
+                return candidate.resolve()
+    return None
+
+
+def project_config_for_args(args: argparse.Namespace, settings: dict[str, Any], server: Server | None = None) -> tuple[dict[str, Any] | None, Path | None]:
+    if getattr(args, "no_project", False):
+        return None, None
+    if getattr(args, "project_config", None) is not None:
+        path = Path(args.project_config).resolve()
+        return load_project_config(path, settings, server), path
+    project_value = getattr(args, "project", None)
+    if project_value is not None:
+        project_id = validate_project_id(str(project_value))
+        return {
+            "version": 1,
+            "project_id": project_id,
+            "remote_workdir": render_project_workdir(settings, project_id),
+            "servers": {},
+        }, None
+    if project_auto_discover(settings):
+        path = discover_project_config(settings)
+        if path is not None:
+            return load_project_config(path, settings, server), path
+    return None, None
+
+
+def project_server_entry(project_data: dict[str, Any], server: Server) -> dict[str, Any]:
+    servers = project_data.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        raise RemoteSshError("Project config field servers must be an object.")
+    for selector in [server.id, server.name, server.raw.get("legacy_server_id", "")]:
+        key = str(selector).strip()
+        if key and isinstance(servers.get(key), dict):
+            return servers[key]
+    return {}
+
+
+def effective_project_context(args: argparse.Namespace, settings: dict[str, Any], server: Server) -> ProjectContext | None:
+    project_data, path = project_config_for_args(args, settings, server)
+    if project_data is None:
+        return None
+    entry = project_server_entry(project_data, server)
+    workdir = str(entry.get("remote_workdir") or project_data.get("remote_workdir") or render_project_workdir(settings, str(project_data["project_id"])))
+    return ProjectContext(
+        project_id=str(project_data["project_id"]),
+        config_path=path,
+        data=project_data,
+        effective_workdir=validate_remote_workdir(workdir),
+        workdir_source="project",
+    )
+
+
+def server_with_workdir(server: Server, workdir: str) -> Server:
+    raw = dict(server.raw)
+    raw["workdir"] = workdir
+    return Server(raw)
+
+
+def server_for_args_project(args: argparse.Namespace, settings: dict[str, Any], server: Server) -> tuple[Server, ProjectContext | None]:
+    project = effective_project_context(args, settings, server)
+    if project is None:
+        return server, None
+    return server_with_workdir(server, project.effective_workdir), project
+
+
+def print_project_context(project: ProjectContext | None) -> None:
+    if project is None:
+        print("workdir_source: server_default")
+        return
+    print(f"project: {project.project_id}")
+    print("workdir_source: project")
+
+
+def project_output_record(project: ProjectContext | None) -> dict[str, Any]:
+    if project is None:
+        return {"project_id": None, "workdir_source": "server_default"}
+    return {
+        "project_id": project.project_id,
+        "effective_workdir": project.effective_workdir,
+        "workdir_source": project.workdir_source,
+    }
 
 
 def get_servers(config: dict[str, Any]) -> list[Server]:
@@ -1057,6 +1249,7 @@ def create_request(
     payload: dict[str, Any],
     reason: str = "",
     risk_summary: list[str] | None = None,
+    project: ProjectContext | None = None,
 ) -> Path:
     request = {
         "version": 1,
@@ -1067,6 +1260,8 @@ def create_request(
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "payload": payload,
     }
+    if project is not None:
+        request.update(project_output_record(project))
     if risk_summary is not None:
         request["risk_summary"] = risk_summary
     elif operation == "command":
@@ -1091,6 +1286,9 @@ def print_request_created(path: Path, request: dict[str, Any]) -> None:
     print(f"request: {path}")
     print(f"operation: {request['operation']}")
     print(f"server: {request['server']}")
+    if request.get("project_id"):
+        print(f"project: {request['project_id']}")
+        print("workdir_source: project")
     for risk in request.get("risk_summary", []):
         print(f"risk: {risk}")
 
@@ -1736,8 +1934,10 @@ def cmd_configure_key(args: argparse.Namespace) -> int:
         return 3
 
     timeout = args.timeout or default_timeout(settings)
+    candidate, project = server_for_args_project(args, settings, candidate)
     result = run_workspace_probe(config, settings, candidate, timeout)
     print(f"server: {current.label}")
+    print_project_context(project)
     print(f"workdir: {REDACTED}")
     if result.returncode != 0:
         summary = summarize_error(result.stderr) or f"SSH command failed with exit code {result.returncode}."
@@ -2186,6 +2386,11 @@ def cmd_setup_key(args: argparse.Namespace) -> int:
 
 
 def prepare_server_for_remote(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], Server]:
+    config, settings, server, _ = prepare_server_for_remote_with_project(args)
+    return config, settings, server
+
+
+def prepare_server_for_remote_with_project(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], Server, ProjectContext | None]:
     config, settings, _ = load_config_for_args(args)
     server = select_server(config, args.server, getattr(args, "allow_disabled", False))
     errors = validate_server(config, server)
@@ -2193,7 +2398,8 @@ def prepare_server_for_remote(args: argparse.Namespace) -> tuple[dict[str, Any],
         for error in errors:
             print(f"check failed: {error}", file=sys.stderr)
         raise RemoteSshError("Server local precheck failed.")
-    return config, settings, server
+    effective_server, project = server_for_args_project(args, settings, server)
+    return config, settings, effective_server, project
 
 
 def utc_timestamp() -> str:
@@ -2217,6 +2423,20 @@ def update_server_status_cache(
     raise RemoteSshError(f"Cannot update validation cache; server not found: {server.label}")
 
 
+def update_project_workspace_cache(settings: dict[str, Any], project: ProjectContext, server: Server, workspace_check: dict[str, Any]) -> None:
+    if project.config_path is None:
+        return
+    data = load_project_config(project.config_path, settings, server)
+    servers = data.setdefault("servers", {})
+    entry = servers.setdefault(server.id, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        servers[server.id] = entry
+    entry.setdefault("remote_workdir", project.effective_workdir)
+    entry["workspace_check"] = workspace_check
+    write_json_atomic(project.config_path, data)
+
+
 def run_workspace_probe(config: dict[str, Any], settings: dict[str, Any], server: Server, timeout: int) -> subprocess.CompletedProcess[str]:
     return run_ssh(build_ssh_args(config, settings, server, "pwd && test -d . && test -x ."), timeout)
 
@@ -2234,6 +2454,196 @@ def print_workspace_probe_result(config: dict[str, Any], server: Server, result:
     return 0
 
 
+def project_config_write_path(args: argparse.Namespace) -> Path:
+    override = getattr(args, "project_config", None)
+    if override is not None:
+        return Path(override).resolve()
+    return (Path.cwd() / ".erie-remote-ssh" / "project.local.json").resolve()
+
+
+def remote_dir_check_command(path: str) -> str:
+    quoted = shlex.quote(path)
+    return (
+        f"target={quoted}; "
+        "parent=$(dirname -- \"$target\"); "
+        "exists=false; is_dir=false; is_empty=true; parent_exists=false; parent_writable=false; "
+        "if [ -e \"$target\" ]; then exists=true; fi; "
+        "if [ -d \"$target\" ]; then is_dir=true; fi; "
+        "if [ -d \"$target\" ] && find \"$target\" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then is_empty=false; fi; "
+        "if [ -d \"$parent\" ]; then parent_exists=true; fi; "
+        "if [ -w \"$parent\" ]; then parent_writable=true; fi; "
+        "printf '{\"exists\":%s,\"is_dir\":%s,\"is_empty\":%s,\"parent_exists\":%s,\"parent_writable\":%s}\\n' "
+        "\"$exists\" \"$is_dir\" \"$is_empty\" \"$parent_exists\" \"$parent_writable\""
+    )
+
+
+def run_remote_dir_check(config: dict[str, Any], settings: dict[str, Any], server: Server, remote_workdir: str, timeout: int) -> dict[str, Any]:
+    no_cd_server = server_with_workdir(server, "")
+    result = run_ssh(build_ssh_args(config, settings, no_cd_server, remote_dir_check_command(remote_workdir)), timeout)
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr) or f"SSH command failed with exit code {result.returncode}."
+        raise RemoteSshError(f"Remote workdir check failed: {redact_text(config, summary)}")
+    try:
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RemoteSshError("Remote workdir check did not return valid JSON.") from exc
+    if not isinstance(data, dict):
+        raise RemoteSshError("Remote workdir check result must be an object.")
+    return data
+
+
+def project_remote_workdir_check_status(check: dict[str, Any]) -> str:
+    if check.get("exists"):
+        return "collision"
+    if check.get("parent_exists") and check.get("parent_writable"):
+        return "available"
+    return "unavailable"
+
+
+def project_config_data(project_id: str, server: Server, remote_workdir: str, check: dict[str, Any], resolution: str | None = None) -> dict[str, Any]:
+    check_record: dict[str, Any] = {
+        "status": project_remote_workdir_check_status(check),
+        "checked_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
+        "exists": bool(check.get("exists")),
+        "is_dir": bool(check.get("is_dir")),
+        "is_empty": bool(check.get("is_empty")),
+        "parent_exists": bool(check.get("parent_exists")),
+        "parent_writable": bool(check.get("parent_writable")),
+    }
+    if resolution:
+        check_record["collision_resolution"] = resolution
+    return {
+        "version": 1,
+        "project_id": project_id,
+        "default_server": server.id,
+        "remote_workdir": remote_workdir,
+        "servers": {
+            server.id: {
+                "remote_workdir": remote_workdir,
+                "remote_workdir_check": check_record,
+            }
+        },
+    }
+
+
+def candidate_workdir_from_project(settings: dict[str, Any], project_id: str, override: str | None) -> str:
+    if override:
+        value = override.strip()
+        if not (value.startswith("~/") or value.startswith("/")):
+            value = f"~/workspace/{validate_project_id(value)}"
+        return validate_remote_workdir(value)
+    return render_project_workdir(settings, project_id)
+
+
+def local_project_workdir_duplicate(settings: dict[str, Any], server: Server, remote_workdir: str, exclude: Path) -> Path | None:
+    search_root = Path.cwd().resolve().parent
+    config_dir_name = project_config_dir(settings)
+    config_names = project_config_names(settings)
+    for project_dir in search_root.rglob(config_dir_name):
+        try:
+            if not project_dir.is_dir() or project_dir.name != config_dir_name:
+                continue
+        except OSError:
+            continue
+        for name in config_names:
+            candidate = project_dir / name
+            try:
+                if not candidate.is_file():
+                    continue
+            except OSError:
+                continue
+            try:
+                if candidate.resolve() == exclude.resolve():
+                    continue
+                data = load_project_config(candidate, settings, server)
+                entry = project_server_entry(data, server)
+                declared = str(entry.get("remote_workdir") or data.get("remote_workdir") or "").strip()
+                if declared == remote_workdir:
+                    return candidate.resolve()
+            except (OSError, RemoteSshError):
+                continue
+    return None
+
+
+def cmd_project_init(args: argparse.Namespace) -> int:
+    if not args.interactive:
+        raise RemoteSshError("project-init currently requires --interactive.")
+    config, settings, _ = load_config_for_args(args)
+    server = select_server(config, args.server, getattr(args, "allow_disabled", False))
+    errors = validate_server(config, server)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        raise RemoteSshError("Server local precheck failed.")
+    if not args.project:
+        raise RemoteSshError("project-init requires --project <id>.")
+    project_id = validate_project_id(str(args.project))
+    timeout = args.timeout or default_timeout(settings)
+    remote_workdir = candidate_workdir_from_project(settings, project_id, args.remote_workdir)
+    resolution: str | None = None
+    output_path = project_config_write_path(args)
+    while True:
+        check = run_remote_dir_check(config, settings, server, remote_workdir, timeout)
+        duplicate = local_project_workdir_duplicate(settings, server, remote_workdir, output_path)
+        if duplicate is not None:
+            check = dict(check)
+            check["exists"] = True
+        status = project_remote_workdir_check_status(check)
+        print(f"project: {project_id}")
+        print(f"remote_workdir: {REDACTED}")
+        print(f"remote_workdir_status: {status}")
+        if status == "available":
+            break
+        if status == "unavailable":
+            raise RemoteSshError("Remote workdir parent is missing or not writable.")
+        print("remote_workdir_collision: true")
+        if duplicate is not None:
+            print("local_project_duplicate: true")
+        action = prompt_choice("collision_action", ["overwrite", "rename", "timestamp", "cancel"], "cancel")
+        if action == "cancel":
+            print("project_init_status: cancelled")
+            return 3
+        if action == "overwrite":
+            resolution = "overwrite_existing_directory"
+            break
+        if action == "rename":
+            renamed = prompt_value("remote_workdir", required=True)
+            remote_workdir = candidate_workdir_from_project(settings, project_id, renamed)
+            resolution = "renamed"
+            continue
+        if action == "timestamp":
+            suffix = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            remote_workdir = render_project_workdir(settings, f"{project_id}-{suffix}")
+            resolution = "timestamp_suffix"
+            print("collision_resolution: timestamp_suffix")
+            continue
+
+    write_json_atomic(output_path, project_config_data(project_id, server, remote_workdir, check, resolution))
+    print(f"project_config: {output_path}")
+    print("project_init_status: saved")
+    return 0
+
+
+def cmd_project_show(args: argparse.Namespace) -> int:
+    config, settings, _ = load_config_for_args(args)
+    server = select_server(config, args.server, getattr(args, "allow_disabled", False))
+    project = effective_project_context(args, settings, server)
+    print(f"server: {server.label}")
+    if project is None:
+        print("project: none")
+        print("workdir_source: server_default")
+        print(f"effective_workdir: {server.workdir if args.show_sensitive else REDACTED}")
+        return 0
+    print(f"project: {project.project_id}")
+    print("workdir_source: project")
+    print(f"project_config: {project.config_path if args.show_sensitive and project.config_path else REDACTED}")
+    print(f"effective_workdir: {project.effective_workdir if args.show_sensitive else REDACTED}")
+    entry = project_server_entry(project.data, server)
+    check = entry.get("remote_workdir_check") if isinstance(entry, dict) else None
+    print(f"remote_workdir_check: {check.get('status', 'missing') if isinstance(check, dict) else 'missing'}")
+    return 0
+
+
 def cmd_workspace_check(args: argparse.Namespace) -> int:
     config, settings, config_path = load_config_for_args(args)
     server = select_server(config, args.server, getattr(args, "allow_disabled", False))
@@ -2245,8 +2655,10 @@ def cmd_workspace_check(args: argparse.Namespace) -> int:
 
     backup = backup_file(config_path)
     timeout = args.timeout or default_timeout(settings)
-    result = run_workspace_probe(config, settings, server, timeout)
+    effective_server, project = server_for_args_project(args, settings, server)
+    result = run_workspace_probe(config, settings, effective_server, timeout)
     print(f"server: {server.label}")
+    print_project_context(project)
     print(f"workdir: {REDACTED}")
     if result.returncode != 0:
         summary = summarize_error(result.stderr)
@@ -2254,50 +2666,58 @@ def cmd_workspace_check(args: argparse.Namespace) -> int:
             print(redact_text(config, summary), file=sys.stderr)
         timestamp = utc_timestamp()
         message = redact_text(config, summary or f"SSH command failed with exit code {result.returncode}.")
-        update_server_status_cache(
-            config_path,
-            config,
-            server,
-            {
-                "status": "failed",
-                "method": "ssh_workspace",
-                "verified_at": None,
-                "last_error": message,
-            },
-            {
-                "status": "failed",
-                "checked_at": timestamp,
-                "message": message,
-            },
-        )
+        validation = {
+            "status": "failed",
+            "method": "ssh_workspace",
+            "verified_at": None,
+            "last_error": message,
+        }
+        workspace_check = {
+            "status": "failed",
+            "checked_at": timestamp,
+            "message": message,
+        }
+        if project is None:
+            update_server_status_cache(config_path, config, server, validation, workspace_check)
+        else:
+            update_project_workspace_cache(settings, project, server, workspace_check)
         print("status: failed")
+        if project is not None:
+            print("next: create the project remote workdir manually or with a reviewed request before retrying workspace-check.")
         print_key_only_repair_guidance(summary or "")
         if backup:
             print(f"backup: {backup}")
         return result.returncode
     timestamp = utc_timestamp()
-    update_server_status_cache(
-        config_path,
-        config,
-        server,
-        {
-            "status": "verified",
-            "method": "ssh_workspace",
-            "verified_at": timestamp,
-            "last_error": None,
-        },
-        {
-            "status": "ok",
-            "checked_at": timestamp,
-            "message": f"The working directory can be accessed: {server.workdir}",
-        },
-    )
+    validation = {
+        "status": "verified",
+        "method": "ssh_workspace",
+        "verified_at": timestamp,
+        "last_error": None,
+    }
+    workspace_check = {
+        "status": "ok",
+        "checked_at": timestamp,
+        "message": f"The working directory can be accessed: {effective_server.workdir}",
+    }
+    if project is None:
+        update_server_status_cache(config_path, config, server, validation, workspace_check)
+    else:
+        selector = server.id.casefold()
+        for record in config.get("servers", []):
+            if isinstance(record, dict) and str(record.get("id", "")).casefold() == selector:
+                record["validation"] = validation
+                write_json_atomic(config_path, config)
+                break
+        update_project_workspace_cache(settings, project, server, workspace_check)
     print("status: ok")
     if backup:
         print(f"backup: {backup}")
 
     refreshed = load_config(config_path)
     refreshed_server = select_server(refreshed, server.id, allow_disabled=False)
+    if project is not None:
+        refreshed_server = server_with_workdir(refreshed_server, project.effective_workdir)
     scan_args = argparse.Namespace(
         timeout=timeout,
         accept_new_host_key=False,
@@ -2363,7 +2783,7 @@ def cmd_file_download(args: argparse.Namespace) -> int:
 
 
 def cmd_request_upload(args: argparse.Namespace) -> int:
-    config, settings, server = prepare_server_for_remote(args)
+    config, settings, server, project = prepare_server_for_remote_with_project(args)
     local_source, upload_root, local_relative_path = resolve_local_upload_path(settings, args.local, must_exist=True)
     sensitive_reasons = sensitive_local_upload_reasons(local_source)
     reason = args.reason or ""
@@ -2383,21 +2803,22 @@ def cmd_request_upload(args: argparse.Namespace) -> int:
         },
         reason=reason,
         risk_summary=risks,
+        project=project,
     )
     print_request_created(path, load_request(path))
     return 0
 
 
 def cmd_request_mkdir(args: argparse.Namespace) -> int:
-    _, settings, server = prepare_server_for_remote(args)
+    _, settings, server, project = prepare_server_for_remote_with_project(args)
     remote_path = remote_relative_path(args.path, allow_dot=False)
-    path = create_request(settings, "mkdir", server, {"remote_path": remote_path}, reason=args.reason or "")
+    path = create_request(settings, "mkdir", server, {"remote_path": remote_path}, reason=args.reason or "", project=project)
     print_request_created(path, load_request(path))
     return 0
 
 
 def cmd_request_delete(args: argparse.Namespace) -> int:
-    _, settings, server = prepare_server_for_remote(args)
+    _, settings, server, project = prepare_server_for_remote_with_project(args)
     remote_path = remote_relative_path(args.path, allow_dot=False)
     path = create_request(
         settings,
@@ -2405,15 +2826,16 @@ def cmd_request_delete(args: argparse.Namespace) -> int:
         server,
         {"remote_path": remote_path, "recursive": bool(args.recursive)},
         reason=args.reason or "",
+        project=project,
     )
     print_request_created(path, load_request(path))
     return 0
 
 
 def cmd_request_command(args: argparse.Namespace) -> int:
-    _, settings, server = prepare_server_for_remote(args)
+    _, settings, server, project = prepare_server_for_remote_with_project(args)
     command = remote_command_from_tokens(args.remote_command)
-    path = create_request(settings, "command", server, {"command": command}, reason=args.reason)
+    path = create_request(settings, "command", server, {"command": command}, reason=args.reason, project=project)
     print_request_created(path, load_request(path))
     return 0
 
@@ -2444,6 +2866,13 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     errors = validate_server(config, server)
     if errors:
         raise RemoteSshError("Server local precheck failed: " + "; ".join(errors))
+    request_project_id = request.get("project_id")
+    if request_project_id:
+        current_project, _ = project_config_for_args(args, settings, server)
+        if current_project is not None and str(current_project.get("project_id")) != str(request_project_id):
+            raise RemoteSshError("Current project context does not match the request project_id.")
+        effective_workdir = validate_remote_workdir(str(request.get("effective_workdir", "")))
+        server = server_with_workdir(server, effective_workdir)
 
     operation = str(request["operation"])
     payload = request["payload"]
@@ -2452,6 +2881,9 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     print(f"request_id: {request.get('request_id')}")
     print(f"operation: {operation}")
     print(f"server: {server.label}")
+    if request_project_id:
+        print(f"project: {request_project_id}")
+        print("workdir_source: project")
     for risk in request.get("risk_summary", []):
         print(f"risk: {risk}")
 
@@ -2734,7 +3166,9 @@ def cmd_command(args: argparse.Namespace) -> int:
             print(f"check failed: {error}", file=sys.stderr)
         return 2
 
+    server, project = server_for_args_project(args, settings, server)
     command = display_command(build_ssh_args(config, settings, server, accept_new_host_key=args.accept_new_host_key))
+    print_project_context(project)
     print(command if args.show_sensitive else redact_command(config, command))
     return 0
 
@@ -2750,6 +3184,10 @@ def cmd_exec(args: argparse.Namespace) -> int:
 
     remote_command = remote_command_from_tokens(args.remote_command)
     timeout = args.timeout if args.timeout is not None else default_timeout(settings)
+    server, project = server_for_args_project(args, settings, server)
+    if project is not None:
+        print(f"project: {project.project_id}")
+        print("workdir_source: project")
     result = run_ssh(build_ssh_args(config, settings, server, remote_command, args.accept_new_host_key), timeout)
     if result.stdout:
         print(result.stdout, end="")
@@ -3011,6 +3449,9 @@ def build_parser() -> argparse.ArgumentParser:
     ) -> None:
         subparser.add_argument("--settings", type=Path, help="Path to Erie Remote SSH settings JSON.")
         subparser.add_argument("--config", type=Path, help="Path to server_list JSON. Overrides settings.")
+        subparser.add_argument("--project-config", type=Path, help="Path to project JSON. Overrides automatic project discovery.")
+        subparser.add_argument("--project", help="Project id for an ephemeral project workdir context.")
+        subparser.add_argument("--no-project", action="store_true", help="Disable automatic project config discovery for this command.")
         if include_server:
             subparser.add_argument("--server", required=True, help="Server id, name, or legacy id.")
             subparser.add_argument("--allow-disabled", action="store_true", help="Allow disabled targets.")
@@ -3064,6 +3505,18 @@ def build_parser() -> argparse.ArgumentParser:
     configure_key_parser.add_argument("--show-sensitive", action="store_true", help="Show key paths and generated public key content.")
     configure_key_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
     configure_key_parser.set_defaults(func=cmd_configure_key)
+
+    project_init_parser = subparsers.add_parser("project-init", help="Create local project workdir config after checking the remote directory.")
+    add_common(project_init_parser)
+    project_init_parser.add_argument("--interactive", action="store_true", help="Prompt for collision handling before writing project config.")
+    project_init_parser.add_argument("--remote-workdir", help="Explicit remote project workdir, or a safe name under ~/workspace.")
+    project_init_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
+    project_init_parser.set_defaults(func=cmd_project_init)
+
+    project_show_parser = subparsers.add_parser("project-show", help="Show current project workdir selection.")
+    add_common(project_show_parser)
+    project_show_parser.add_argument("--show-sensitive", action="store_true", help="Show project config path and effective workdir.")
+    project_show_parser.set_defaults(func=cmd_project_show)
 
     setup_key_parser = subparsers.add_parser("setup-key", help="Check local key files and print passwordless SSH setup guidance.")
     add_common(setup_key_parser)

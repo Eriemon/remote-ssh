@@ -942,6 +942,265 @@ def workspace_check_writeback_tests(settings: dict[str, Any], tmp_dir: Path) -> 
         raise ValidationError(f"workspace-check did not persist failed software scan: {scan_failed}")
 
 
+def project_workdir_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
+    server_list = create_validation_server_list(tmp_dir / "project-workdir")
+    config = load_ref(server_list)
+    server_id = config["servers"][0]["id"]
+    config["servers"][0]["workdir"] = "~/workspace/server-default"
+    config["servers"][0].pop("validation", None)
+    config["servers"][0].pop("workspace_check", None)
+    config["servers"][0].pop("software_scan", None)
+    write_json(server_list, config)
+
+    project_root = tmp_dir / "local-project"
+    nested = project_root / "src" / "nested"
+    nested.mkdir(parents=True)
+    project_dir = project_root / ".erie-remote-ssh"
+    project_dir.mkdir()
+    project_local = write_json(
+        project_dir / "project.local.json",
+        {
+            "version": 1,
+            "project_id": "local_project",
+            "default_server": server_id,
+            "remote_workdir": "~/workspace/local-project",
+            "servers": {
+                server_id: {
+                    "remote_workdir": "~/workspace/local-project-server",
+                }
+            },
+        },
+    )
+    write_json(
+        project_dir / "project.json",
+        {
+            "version": 1,
+            "project_id": "shared_project",
+            "remote_workdir": "~/workspace/shared-project",
+        },
+    )
+
+    temp_settings = copy_settings_with_server_list(settings, tmp_dir / "project-settings.json", server_list)
+    settings_copy = load_ref(temp_settings)
+    settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(
+            tmp_dir / "project-effective-ssh",
+            [
+                {"stdout": "~/workspace/local-project-server\n", "returncode": 0},
+                {"stdout": "~/workspace/server-default\n", "returncode": 0},
+                {"stdout": "~/workspace/adhoc_project\n", "returncode": 0},
+            ],
+        )
+    )
+    write_json(temp_settings, settings_copy)
+
+    project_show = run_tool(["project-show", "--settings", str(temp_settings), "--server", server_id], cwd=nested)
+    assert_contains(project_show.stdout, "project: local_project", "project-show output")
+    assert_contains(project_show.stdout, "workdir_source: project", "project-show output")
+    assert_contains(project_show.stdout, "project_config:", "project-show output")
+    assert_not_contains(project_show.stdout, str(project_local), "project-show redacted output")
+
+    explicit_project = write_json(
+        tmp_dir / "explicit-project.json",
+        {
+            "version": 1,
+            "project_id": "explicit_project",
+            "remote_workdir": "~/workspace/explicit-project",
+        },
+    )
+    explicit_show = run_tool(["project-show", "--settings", str(temp_settings), "--server", server_id, "--project-config", str(explicit_project)], cwd=nested)
+    assert_contains(explicit_show.stdout, "project: explicit_project", "explicit project-show output")
+
+    for invalid_project_id in [".", "..", "", "bad/name"]:
+        invalid_result = run_tool(
+            ["project-show", "--settings", str(temp_settings), "--server", server_id, "--project", invalid_project_id],
+            expected=1,
+        )
+        assert_contains(invalid_result.stderr, "Project id must", f"invalid project id {invalid_project_id!r}")
+
+    valid_project_id = run_tool(["project-show", "--settings", str(temp_settings), "--server", server_id, "--project", "my_project-1.0"], cwd=nested)
+    assert_contains(valid_project_id.stdout, "project: my_project-1.0", "valid project id output")
+
+    for index, invalid_workdir in enumerate(["/", "~/", "~", "~/workspace/.", "~/workspace//x", "~/workspace/.."]):
+        invalid_project = write_json(
+            tmp_dir / f"invalid-project-{index}.json",
+            {
+                "version": 1,
+                "project_id": f"invalid_project_{index}",
+                "remote_workdir": invalid_workdir,
+            },
+        )
+        invalid_result = run_tool(
+            ["project-show", "--settings", str(temp_settings), "--server", server_id, "--project-config", str(invalid_project)],
+            expected=1,
+        )
+        assert_contains(invalid_result.stderr, "Project remote_workdir", f"invalid project workdir {invalid_workdir!r}")
+
+    exec_project = run_tool(["exec", "--settings", str(temp_settings), "--server", server_id, "--", "pwd"], cwd=nested)
+    assert_contains(exec_project.stdout, "~/workspace/local-project-server", "project exec output")
+
+    exec_no_project = run_tool(["exec", "--settings", str(temp_settings), "--server", server_id, "--no-project", "--", "pwd"], cwd=nested)
+    assert_contains(exec_no_project.stdout, "~/workspace/server-default", "no-project exec output")
+
+    exec_adhoc_project = run_tool(["exec", "--settings", str(temp_settings), "--server", server_id, "--project", "adhoc_project", "--", "pwd"], cwd=tmp_dir)
+    assert_contains(exec_adhoc_project.stdout, "~/workspace/adhoc_project", "adhoc project exec output")
+
+    workspace_settings = copy_settings_with_server_list(settings, tmp_dir / "project-workspace-settings.json", server_list)
+    workspace_settings_copy = load_ref(workspace_settings)
+    workspace_settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(
+            tmp_dir / "project-workspace-ssh",
+            [
+                {"stdout": "~/workspace/local-project-server\n", "returncode": 0},
+                {"stdout": fake_scan_output(), "returncode": 0},
+            ],
+        )
+    )
+    workspace_settings_copy["inventory"] = compact_scan_inventory()
+    write_json(workspace_settings, workspace_settings_copy)
+    workspace_result = run_tool(["workspace-check", "--settings", str(workspace_settings), "--server", server_id], cwd=nested)
+    assert_contains(workspace_result.stdout, "project: local_project", "project workspace-check output")
+    updated_server = load_ref(server_list)["servers"][0]
+    if "workspace_check" in updated_server:
+        raise ValidationError(f"project workspace-check must not overwrite global workspace_check: {updated_server}")
+    project_cache = load_ref(project_local)
+    server_cache = project_cache.get("servers", {}).get(server_id, {})
+    if server_cache.get("workspace_check", {}).get("status") != "ok":
+        raise ValidationError(f"project workspace-check did not write project cache: {project_cache}")
+    if updated_server.get("validation", {}).get("status") != "verified":
+        raise ValidationError(f"project workspace-check should preserve global validation success: {updated_server}")
+    if updated_server.get("software_scan", {}).get("status") != "ok":
+        raise ValidationError(f"project workspace-check should refresh global software scan: {updated_server}")
+
+    request_settings = copy_settings_with_server_list(settings, tmp_dir / "project-request-settings.json", server_list)
+    request_settings_copy = load_ref(request_settings)
+    request_settings_copy["paths"]["requests_dir"] = str(tmp_dir / "project-requests")
+    write_json(request_settings, request_settings_copy)
+    request_result = run_tool(
+        ["request-command", "--settings", str(request_settings), "--server", server_id, "--reason", "project context", "--", "pwd"],
+        cwd=nested,
+    )
+    assert_contains(request_result.stdout, "request:", "project request output")
+    request_path = Path(next(line.split(":", 1)[1].strip() for line in request_result.stdout.splitlines() if line.startswith("request:")))
+    request_payload = load_ref(request_path)
+    if request_payload.get("project_id") != "local_project" or request_payload.get("effective_workdir") != "~/workspace/local-project-server":
+        raise ValidationError(f"request did not bind project context: {request_payload}")
+    request_text = request_path.read_text(encoding="utf-8")
+    for forbidden in ["project_config", str(project_local), str(Path.home()), ".erie-remote-ssh/project.local.json"]:
+        assert_not_contains(request_text, forbidden, "project request JSON")
+
+    run_settings = copy_settings_with_server_list(settings, tmp_dir / "project-run-settings.json", server_list)
+    run_settings_copy = load_ref(run_settings)
+    run_settings_copy["tools"]["ssh_client"] = str(create_sequence_fake_ssh(tmp_dir / "project-run-ssh", [{"stdout": "ok\n", "returncode": 0}, {"stdout": "ran\n", "returncode": 0}]))
+    write_json(run_settings, run_settings_copy)
+    run_result = run_tool(["run-request", "--settings", str(run_settings), "--request", str(request_path), "--execute"], cwd=tmp_dir)
+    assert_contains(run_result.stdout, "project: local_project", "project run-request output")
+    assert_contains(run_result.stdout, "ran", "project run-request output")
+
+    collision_list = create_validation_server_list(tmp_dir / "project-init")
+    collision_config = load_ref(collision_list)
+    collision_config["servers"][0]["workdir"] = "~/workspace"
+    write_json(collision_list, collision_config)
+    collision_settings = copy_settings_with_server_list(settings, tmp_dir / "project-init-settings.json", collision_list)
+    collision_settings_copy = load_ref(collision_settings)
+    collision_settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(
+            tmp_dir / "project-init-ssh",
+            [
+                {"stdout": '{"exists":true,"is_dir":true,"is_empty":false,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":true,"is_dir":true,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":true,"is_dir":true,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":false,"is_dir":false,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":true,"is_dir":true,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":false,"is_dir":false,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+                {"stdout": '{"exists":true,"is_dir":true,"is_empty":true,"parent_exists":true,"parent_writable":true}\n', "returncode": 0},
+            ],
+        )
+    )
+    write_json(collision_settings, collision_settings_copy)
+
+    collision_project = tmp_dir / "project-init-cwd"
+    collision_project.mkdir()
+    init_overwrite = run_tool(
+        ["project-init", "--settings", str(collision_settings), "--config", str(collision_list), "--server", server_id, "--project", "collision_project", "--interactive"],
+        input_text="overwrite\n",
+        cwd=collision_project,
+    )
+    assert_contains(init_overwrite.stdout, "remote_workdir_collision: true", "project-init overwrite output")
+    written_project = load_ref(collision_project / ".erie-remote-ssh" / "project.local.json")
+    if written_project.get("servers", {}).get(server_id, {}).get("remote_workdir_check", {}).get("collision_resolution") != "overwrite_existing_directory":
+        raise ValidationError(f"overwrite collision resolution not recorded: {written_project}")
+
+    duplicate_root = tmp_dir / "duplicate-root"
+    existing_project_dir = duplicate_root / "existing" / ".erie-remote-ssh"
+    existing_project_dir.mkdir(parents=True)
+    write_json(
+        existing_project_dir / "project.json",
+        {
+            "version": 1,
+            "project_id": "existing_duplicate",
+            "remote_workdir": "~/workspace/duplicate_project",
+            "servers": {server_id: {"remote_workdir": "~/workspace/duplicate_project"}},
+        },
+    )
+    duplicate_cwd = duplicate_root / "new"
+    duplicate_cwd.mkdir()
+    duplicate_result = run_tool(
+        [
+            "project-init",
+            "--settings",
+            str(collision_settings),
+            "--config",
+            str(collision_list),
+            "--server",
+            server_id,
+            "--project",
+            "duplicate_project",
+            "--interactive",
+        ],
+        input_text="cancel\n",
+        cwd=duplicate_cwd,
+        expected=3,
+    )
+    assert_contains(duplicate_result.stdout, "local_project_duplicate: true", "project duplicate collision output")
+
+    rename_project = tmp_dir / "project-rename-cwd"
+    rename_project.mkdir()
+    init_rename = run_tool(
+        ["project-init", "--settings", str(collision_settings), "--config", str(collision_list), "--server", server_id, "--project", "rename_project", "--interactive"],
+        input_text="rename\nrenamed_project\n",
+        cwd=rename_project,
+    )
+    assert_contains(init_rename.stdout, "remote_workdir_collision: true", "project-init rename output")
+    renamed_config = load_ref(rename_project / ".erie-remote-ssh" / "project.local.json")
+    if renamed_config.get("remote_workdir") != "~/workspace/renamed_project":
+        raise ValidationError(f"rename collision did not write renamed workdir: {renamed_config}")
+
+    timestamp_project = tmp_dir / "project-timestamp-cwd"
+    timestamp_project.mkdir()
+    init_timestamp = run_tool(
+        ["project-init", "--settings", str(collision_settings), "--config", str(collision_list), "--server", server_id, "--project", "timestamp_project", "--interactive"],
+        input_text="timestamp\n",
+        cwd=timestamp_project,
+    )
+    assert_contains(init_timestamp.stdout, "collision_resolution: timestamp_suffix", "project-init timestamp output")
+    timestamp_config = load_ref(timestamp_project / ".erie-remote-ssh" / "project.local.json")
+    if not re.fullmatch(r"~/workspace/timestamp_project-\d{8}-\d{6}", str(timestamp_config.get("remote_workdir", ""))):
+        raise ValidationError(f"timestamp collision did not write suffixed workdir: {timestamp_config}")
+
+    cancel_project = tmp_dir / "project-cancel-cwd"
+    cancel_project.mkdir()
+    cancel_result = run_tool(
+        ["project-init", "--settings", str(collision_settings), "--config", str(collision_list), "--server", server_id, "--project", "cancel_project", "--interactive"],
+        input_text="cancel\n",
+        cwd=cancel_project,
+        expected=3,
+    )
+    assert_contains(cancel_result.stdout, "project_init_status: cancelled", "project-init cancel output")
+    if (cancel_project / ".erie-remote-ssh" / "project.local.json").exists():
+        raise ValidationError("cancelled project-init should not write project config")
+
+
 def subprocess_decoding_tests(tmp_dir: Path) -> None:
     helper = create_invalid_utf8_helper(tmp_dir)
     try:
@@ -1056,7 +1315,7 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     empty_result = run_tool(["discover", "--settings", str(temp_settings)], expected=4)
     assert_contains(empty_result.stdout, "status: no_enabled_ssh", "empty discover output")
 
-    add_input = "\n\nfixture.example.invalid\n\ncodex\nid_remote_validation\n\n\nGeneral\nremote development; workspace validation\nvalidation note\ny\n"
+    add_input = "\n\nexample.invalid\n\ncodex\nid_remote_validation\n\n\nGeneral\nremote development; workspace validation\nvalidation note\ny\n"
     add_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], input_text=add_input)
     assert_contains(add_result.stdout, "section: connection", "add-server output")
     assert_contains(add_result.stdout, "section: metadata", "add-server output")
@@ -1082,7 +1341,7 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     available_result = run_tool(["discover", "--settings", str(temp_settings)])
     assert_contains(available_result.stdout, "status: available", "available discover output")
 
-    same_host_input = "server_2\nsame-host-alt\nfixture.example.invalid\n30022\nvalidation-alt-user\n\nid_remote_validation\n~/workspace\ny\n\n\nsame host alt\ny\n"
+    same_host_input = "server_2\nsame-host-alt\nexample.invalid\n30022\nvalidation-alt-user\n\nid_remote_validation\n~/workspace\ny\n\n\nsame host alt\ny\n"
     same_host_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], input_text=same_host_input)
     assert_contains(same_host_result.stdout, "matching_host_count: 1", "same-host add-server output")
     assert_contains(same_host_result.stdout, "existing: server_1", "same-host add-server output")
@@ -1093,7 +1352,7 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError(f"same-host add-server did not add the alternate login: {same_host_config}")
 
     before_duplicate_identity = json.dumps(same_host_config, sort_keys=True)
-    duplicate_identity_input = "server_3\nsame-host-duplicate\nfixture.example.invalid\n22\ncodex\n\n"
+    duplicate_identity_input = "server_3\nsame-host-duplicate\nexample.invalid\n22\ncodex\n\n"
     duplicate_identity_result = run_tool(["add-server", "--settings", str(temp_settings), "--interactive"], expected=3, input_text=duplicate_identity_input)
     assert_contains(duplicate_identity_result.stdout, "duplicate_login: true", "duplicate identity add-server output")
     assert_contains(duplicate_identity_result.stdout, "add_server_status: cancelled", "duplicate identity add-server output")
@@ -1553,7 +1812,7 @@ def passwordless_setup_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
                     "id": "passwordless_1",
                     "name": "Passwordless Validation",
                     "type": "ssh",
-                    "host": "fixture.example.invalid",
+                    "host": "example.invalid",
                     "port": 22,
                     "username": "codex",
                     "key_name": "id_validation",
@@ -1570,7 +1829,7 @@ def passwordless_setup_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     assert_contains(result.stdout, "BatchMode=yes", "setup-key output")
     assert_contains(result.stdout, "authorized_keys", "setup-key output")
     assert_contains(result.stdout, "manual_login_required: true", "setup-key output")
-    assert_not_contains(result.stdout, "fixture.example.invalid", "setup-key output")
+    assert_not_contains(result.stdout, "example.invalid", "setup-key output")
     assert_not_contains(result.stdout, "codex", "setup-key output")
     assert_not_contains(result.stdout, "id_validation", "setup-key output")
 
@@ -2050,8 +2309,9 @@ def skill_frontmatter_audit() -> None:
 
 
 def skill_identity_audit() -> None:
-    if SKILL_DIR.name not in {"erie-remote-ssh", "remote-ssh"}:
-        raise ValidationError(f"skill folder must be erie-remote-ssh or remote-ssh, got {SKILL_DIR.name}")
+    valid_names = {"erie-remote-ssh", "remote-ssh", release_artifact_base_name(skill_version())}
+    if SKILL_DIR.name not in valid_names:
+        raise ValidationError(f"skill folder must be one of {sorted(valid_names)}, got {SKILL_DIR.name}")
     skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     if "name: erie-remote-ssh" not in skill_text:
         raise ValidationError("SKILL.md frontmatter must use name: erie-remote-ssh")
@@ -2125,17 +2385,34 @@ def software_catalog_documentation_audit() -> None:
 def default_reports_path_audit(settings: dict[str, Any]) -> None:
     expected_requests = SKILL_DIR / "reports" / "requests"
     expected_downloads = SKILL_DIR / "reports" / "downloads"
+    expected_validation_tmp = SKILL_DIR / "reports" / "tmp" / "validation"
     actual_requests = remote_ssh.requests_dir(settings).resolve()
     actual_downloads = remote_ssh.downloads_dir(settings).resolve()
+    actual_validation_tmp = remote_ssh.resolve_config_path(
+        str(remote_ssh.settings_value(settings, "paths", "validation_tmp_dir", default="${skill_dir}/reports/tmp/validation")),
+        remote_ssh.settings_path(settings),
+        settings["_context"],
+    ).resolve()
     if actual_requests != expected_requests.resolve():
         raise ValidationError(f"default requests_dir must resolve to {expected_requests}, got {actual_requests}")
     if actual_downloads != expected_downloads.resolve():
         raise ValidationError(f"default downloads_dir must resolve to {expected_downloads}, got {actual_downloads}")
-    for path in [actual_requests, actual_downloads]:
+    if actual_validation_tmp != expected_validation_tmp.resolve():
+        raise ValidationError(f"default validation_tmp_dir must resolve to {expected_validation_tmp}, got {actual_validation_tmp}")
+    root_artifact_dirs = {
+        (ROOT / "out").resolve(),
+        (ROOT / "remote-validation-bundles").resolve(),
+        (ROOT / "requests").resolve(),
+        (ROOT / "downloads").resolve(),
+        (ROOT / "tmp").resolve(),
+    }
+    for path in [actual_requests, actual_downloads, actual_validation_tmp]:
         try:
             path.relative_to((SKILL_DIR / "reports").resolve())
         except ValueError as exc:
             raise ValidationError(f"default report artifact path must stay inside skill reports/: {path}") from exc
+        if path in root_artifact_dirs:
+            raise ValidationError(f"default artifact path must not use repository root runtime directory: {path}")
     combined_docs = "\n".join(
         [
             (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8"),
@@ -2144,7 +2421,16 @@ def default_reports_path_audit(settings: dict[str, Any]) -> None:
             (SKILL_DIR / "references" / "review-checklist.md").read_text(encoding="utf-8"),
         ]
     ).casefold()
-    for term in ["reports", "preserve", "update", "${skill_dir}/reports/requests", "${skill_dir}/reports/downloads"]:
+    for term in [
+        "reports",
+        "preserve",
+        "update",
+        "${skill_dir}/reports/requests",
+        "${skill_dir}/reports/downloads",
+        "${skill_dir}/reports/tmp/validation",
+        "remote-validation-bundles",
+        "root-level",
+    ]:
         if term not in combined_docs:
             raise ValidationError(f"reports documentation must mention {term!r}")
 
@@ -2185,6 +2471,7 @@ def repository_gitignore_audit() -> None:
     required = {
         "erie-remote-ssh/config/server_list.local.json",
         "erie-remote-ssh/config/server_list.local.json.bak.*",
+        "**/.erie-remote-ssh/project.local.json",
         "erie-remote-ssh/reports/",
         "erie-remote-ssh/requests/",
         "erie-remote-ssh/downloads/",
@@ -2206,6 +2493,36 @@ def skill_version() -> str:
     return version
 
 
+def release_artifact_base_name(version: str) -> str:
+    return f"erie-remote-ssh-v{version}"
+
+
+def running_from_release_artifact(version: str) -> bool:
+    return SKILL_DIR.name == release_artifact_base_name(version) and (SKILL_DIR.parent / "manifest.json").exists()
+
+
+def release_artifact_naming_audit(version: str) -> None:
+    dist_root = ROOT / "dist"
+    if not dist_root.exists():
+        return
+    expected_base = release_artifact_base_name(version)
+    expected_dir = dist_root / expected_base
+    expected_zip = dist_root / f"{expected_base}.zip"
+    legacy_dir = dist_root / "erie-remote-ssh"
+    legacy_zip = dist_root / "erie-remote-ssh.zip"
+    if legacy_dir.exists() or legacy_zip.exists():
+        raise ValidationError("release artifacts must be versioned as erie-remote-ssh-vx.x.x, not unversioned")
+    if (dist_root / "manifest.json").exists() and (not expected_dir.exists() or not expected_zip.exists()):
+        raise ValidationError(f"release artifacts must include {expected_dir.name}/ and {expected_zip.name}")
+    manifest_path = dist_root / "manifest.json"
+    if manifest_path.exists():
+        manifest = load_ref(manifest_path)
+        if manifest.get("directory_artifact") != expected_dir.name:
+            raise ValidationError(f"release manifest directory_artifact must be {expected_dir.name}")
+        if manifest.get("zip_artifact") != expected_zip.name:
+            raise ValidationError(f"release manifest zip_artifact must be {expected_zip.name}")
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -2215,15 +2532,7 @@ def file_sha256(path: Path) -> str:
 
 
 def release_file_count(path: Path) -> int:
-    count = 0
-    for file_path in path.rglob("*"):
-        if not file_path.is_file():
-            continue
-        parts = {part.casefold() for part in file_path.relative_to(path).parts}
-        if ".git" in parts or "__pycache__" in parts or file_path.suffix.casefold() == ".pyc":
-            continue
-        count += 1
-    return count
+    return sum(1 for file_path in path.rglob("*") if is_release_file(file_path, path))
 
 
 def is_release_file(path: Path, root: Path) -> bool:
@@ -2239,6 +2548,8 @@ def is_release_file(path: Path, root: Path) -> bool:
     if any(part in {"reports", "requests", "downloads", "logs", "tmp"} for part in parts):
         return False
     if rel.as_posix() == "config/server_list.local.json":
+        return False
+    if name == "project.local.json":
         return False
     if name.startswith("server_list.local.json.bak") or ".bak." in name or name.endswith(".bak"):
         return False
@@ -2296,6 +2607,8 @@ def assert_markdown_tree_utf8(root: Path, label: str) -> dict[str, str]:
         if not file_path.is_file():
             continue
         rel = file_path.relative_to(root).as_posix()
+        if any(part in {"reports", "requests", "downloads", "logs", "tmp"} for part in file_path.relative_to(root).parts):
+            continue
         text = assert_utf8_markdown_bytes(file_path.read_bytes(), f"{label}:{rel}")
         found = canary_value(text)
         if found:
@@ -2356,14 +2669,16 @@ def markdown_encoding_artifact_audit() -> None:
     if source_canary.get(canary_path) != ENCODING_CANARY:
         raise ValidationError(f"{canary_path} must contain the Chinese UTF-8 encoding canary")
 
+    version = skill_version()
+    artifact_base = release_artifact_base_name(version)
     dist_root = ROOT / "dist"
-    dist_skill = dist_root / "erie-remote-ssh"
+    dist_skill = dist_root / artifact_base
     if dist_skill.exists():
         dist_canary = assert_markdown_tree_utf8(dist_skill, "dist directory")
         if dist_canary.get(canary_path) != ENCODING_CANARY:
             raise ValidationError("dist directory markdown canary does not match source")
 
-    zip_path = dist_root / "erie-remote-ssh.zip"
+    zip_path = dist_root / f"{artifact_base}.zip"
     if zip_path.exists():
         zip_canary = assert_markdown_zip_utf8(zip_path)
         if zip_canary.get(canary_path) != ENCODING_CANARY:
@@ -2373,9 +2688,13 @@ def markdown_encoding_artifact_audit() -> None:
 def release_artifact_consistency_audit() -> None:
     if os.environ.get("ERIE_REMOTE_SSH_SKIP_ISOLATED_VALIDATION") == "1":
         return
+    version = skill_version()
+    if running_from_release_artifact(version):
+        return
+    artifact_base = release_artifact_base_name(version)
     dist_root = ROOT / "dist"
-    dist_skill = dist_root / "erie-remote-ssh"
-    zip_path = dist_root / "erie-remote-ssh.zip"
+    dist_skill = dist_root / artifact_base
+    zip_path = dist_root / f"{artifact_base}.zip"
     if not dist_skill.exists() or not zip_path.exists():
         raise ValidationError("dist directory and zip artifact must exist; run scripts/build_release.py")
     source_files = release_file_bytes(SKILL_DIR)
@@ -2479,6 +2798,11 @@ def release_manifest_audit(version: str) -> None:
         raise ValidationError("release manifest source_branch must be main or master")
     if manifest.get("release_branch") != "release":
         raise ValidationError("release manifest release_branch must be release")
+    expected_base = release_artifact_base_name(version)
+    if manifest.get("directory_artifact") != expected_base:
+        raise ValidationError(f"release manifest directory_artifact must be {expected_base}")
+    if manifest.get("zip_artifact") != f"{expected_base}.zip":
+        raise ValidationError(f"release manifest zip_artifact must be {expected_base}.zip")
     source_commit = str(manifest.get("source_commit", ""))
     if source_commit != "working-tree" and not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise ValidationError("release manifest source_commit must be a full lowercase Git hash or working-tree")
@@ -2498,6 +2822,8 @@ def release_manifest_audit(version: str) -> None:
     excludes = manifest.get("excludes")
     if not isinstance(excludes, list) or "config/server_list.local.json" not in excludes:
         raise ValidationError("release manifest excludes must include config/server_list.local.json")
+    if "project.local.json" not in excludes:
+        raise ValidationError("release manifest excludes must include project.local.json")
     if "reports/" not in excludes:
         raise ValidationError("release manifest excludes must include reports/")
 
@@ -2589,7 +2915,15 @@ def isolated_no_ref_tests(skill_validator: Path, tmp_dir: Path) -> None:
     shutil.copytree(
         SKILL_DIR,
         isolated_skill,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "server_list.local.json", "*.bak", "*.bak.*", "*.log"),
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            "reports",
+            "server_list.local.json",
+            "*.bak",
+            "*.bak.*",
+            "*.log",
+        ),
     )
 
     if (isolated_root / "ref").exists():
@@ -2636,7 +2970,7 @@ def main() -> int:
     settings_path = remote_ssh.settings_path(settings)
     skill_validator = resolve_skill_validator(settings, args.skill_validator)
     tmp_base = remote_ssh.resolve_config_path(
-        str(remote_ssh.settings_value(settings, "paths", "validation_tmp_dir", default="${project_root}/tmp/erie-remote-ssh-validation")),
+        str(remote_ssh.settings_value(settings, "paths", "validation_tmp_dir", default="${skill_dir}/reports/tmp/validation")),
         settings_path,
         settings["_context"],
     )
@@ -2650,6 +2984,7 @@ def main() -> int:
     try:
         version = skill_version()
         markdown_encoding_guard_tests(tmp_dir)
+        release_artifact_naming_audit(version)
         markdown_encoding_artifact_audit()
         release_artifact_consistency_audit()
         installed_skill_audit()
@@ -2676,6 +3011,7 @@ def main() -> int:
         backup_collision_tests(tmp_dir)
         software_scan_tests(settings, tmp_dir)
         workspace_check_writeback_tests(settings, tmp_dir)
+        project_workdir_tests(settings, tmp_dir)
         discovery_and_add_tests(settings, tmp_dir)
         configuration_gate_tests(settings, tmp_dir)
         request_and_path_tests(settings, settings_path, server_list, ref_config, tmp_dir)

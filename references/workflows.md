@@ -9,6 +9,7 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 - Choose Configuration Mode
 - Add a Server When None Is Available
 - Use a Server List JSON
+- Use a Project Workdir
 - Locate and Inspect Targets
 - Update or Replace the Skill
 - Local Precheck
@@ -50,7 +51,9 @@ Discovery outcomes:
 
 Before updating or replacing an installed `erie-remote-ssh` directory from GitHub, a local directory, a release artifact, or another source, inspect `<target-skill-dir>/reports`. If it exists, ask the user whether to clear it or preserve it. Preserve it by default unless the user explicitly confirms cleanup.
 
-`reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests` and downloads to `${skill_dir}/reports/downloads`; custom settings may override these paths.
+`reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests`, downloads to `${skill_dir}/reports/downloads`, and validation temp runs to `${skill_dir}/reports/tmp/validation`; custom settings may override these paths.
+
+Do not treat root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` as normal output from this skill. `out` and `remote-validation-bundles` usually come from other skills or explicitly supplied output paths; root-level `requests`, `downloads`, and `tmp` may be historical artifacts from older defaults. The only root-level artifact directory this skill intentionally creates is `dist/` during release builds.
 
 ## Choose Configuration Mode
 
@@ -129,6 +132,31 @@ Do not use this flow to correct host, port, username, workdir, enabled state, ca
 
 The default workdir prompt is controlled by `ssh.default_workdir` and is `~/workspace` in the bundled settings. The written server entry still stores an explicit `workdir`.
 
+## Use a Project Workdir
+
+The server-list `workdir` is the server default. When a local task belongs to a specific project, use project config so the effective remote directory becomes project-specific without changing the shared server entry.
+
+Project config discovery is automatic: from the current directory upward, the helper looks for `.erie-remote-ssh/project.local.json` and then `.erie-remote-ssh/project.json`. Use `project-show` before remote work when the current directory might already contain project config:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py project-show --settings <settings> --server <id-or-name>
+```
+
+Use `project-init` to create project config:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py project-init --settings <settings> --server <id-or-name> --project <project_id> --interactive
+```
+
+`project-init` checks the candidate remote directory using BatchMode SSH before writing local JSON. If the directory already exists, is declared by another local project config for the same server, or is otherwise a collision, the user must choose:
+
+- `overwrite`: reuse the existing directory without deleting or clearing anything.
+- `rename`: enter a new safe directory name or full `~/workspace/<name>` path, then recheck.
+- `timestamp`: use `~/workspace/<project_id>-YYYYMMDD-HHMMSS`, then recheck.
+- `cancel`: leave local config unchanged.
+
+Use `--project-config <json>` to choose a specific project file, `--project <id>` for a temporary project context, or `--no-project` to force the server-list `workdir`.
+
 ## Use a Server List JSON
 
 The default settings read skill-local `config/server_list.local.json`. Create it from `config/server_list.template.json`, use `init-config`, or pass an external JSON file with `--config`.
@@ -205,7 +233,7 @@ Then verify the remote working directory:
 python <skill-dir>\scripts\remote_ssh.py workspace-check --settings <settings> --server <id-or-name>
 ```
 
-`workspace-check` is the configuration validation write-back point. It verifies the configured `workdir`, backs up the selected server-list JSON, writes `validation.status: verified` and `workspace_check.status: ok` on success, then refreshes cached `software_scan`. On workspace failure, it writes failed validation/workspace metadata and skips the software scan. With bundled defaults it writes `config/server_list.local.json`; `--config` and custom settings write to their resolved server-list file.
+`workspace-check` is the configuration validation write-back point. Without project context, it verifies the configured server `workdir`, backs up the selected server-list JSON, writes `validation.status: verified` and `workspace_check.status: ok` on success, then refreshes cached `software_scan`. With project context, it verifies the project effective workdir, writes project workspace status to the project config, updates global SSH validation, and refreshes server-level `software_scan` without overwriting global server `workspace_check`. On workspace failure, it does not create the remote project directory automatically.
 
 `workdir` is the boundary for built-in file modifications. The helper does not claim to sandbox arbitrary shell commands. Internal request execution still performs a non-mutating workdir probe before acting.
 
@@ -290,7 +318,7 @@ Guidelines:
 
 - Keep validation commands short, such as `echo ok`, `pwd`, or `uname -a`.
 - Avoid destructive commands unless the user clearly requested them.
-- The helper enters the server `workdir` before running the command when `workdir` is configured.
+- The helper enters the effective `workdir` before running the command. Project config overrides the server-list `workdir`; `--no-project` disables that override.
 - The helper does not make arbitrary remote commands safe; it only passes the requested command to the remote shell.
 - Request files include a lightweight risk summary for obvious shell risks such as `sudo`, `rm`, redirection, pipes, backgrounding, and absolute paths.
 - Increase `--timeout` only when the remote command is expected to take longer.

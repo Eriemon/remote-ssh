@@ -193,7 +193,7 @@ If this skill helps your research, teaching, or engineering workflow, please cit
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
   version      = {0.1.6},
-  date         = {2026-05-09},
+  date         = {2026-05-10},
   url          = {https://github.com/Eriemon/remote-ssh},
   license      = {Apache-2.0},
   note         = {Agent skill package for conservative SSH-based development and test workflows}

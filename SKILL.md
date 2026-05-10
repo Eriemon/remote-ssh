@@ -19,7 +19,7 @@ Do not use it for purely local development, local file editing, ordinary FPGA/RT
 
 ## Update / Reports Preservation
 
-Before updating or replacing this skill from GitHub, a local directory, a release artifact, or another source, inspect the target `erie-remote-ssh/reports` directory. If it exists, ask the user whether to clear it or preserve it. Preserve `reports` by default unless the user explicitly confirms cleanup. `reports` is a local runtime artifact root and is not managed by git.
+Before updating or replacing this skill from GitHub, a local directory, a release artifact, or another source, inspect the target `erie-remote-ssh/reports` directory. If it exists, ask the user whether to clear it or preserve it. Preserve `reports` by default unless the user explicitly confirms cleanup. `reports` is a local runtime artifact root and is not managed by git. Bundled defaults keep requests, downloads, and validation temp runs under `reports`; root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` are not normal output from this skill. Root-level `dist/` is reserved for release builds.
 
 Use `scripts/remote_ssh.py` for deterministic operations whenever possible:
 
@@ -32,6 +32,8 @@ python <skill-dir>\scripts\remote_ssh.py configure --settings <settings.json> --
 python <skill-dir>\scripts\remote_ssh.py add-server --settings <settings.json> --interactive
 python <skill-dir>\scripts\remote_ssh.py update-server --settings <settings.json> --server <id-or-name> --interactive
 python <skill-dir>\scripts\remote_ssh.py configure-key --settings <settings.json> --server <id-or-name> --interactive
+python <skill-dir>\scripts\remote_ssh.py project-init --settings <settings.json> --server <id-or-name> --project <id> --interactive
+python <skill-dir>\scripts\remote_ssh.py project-show --settings <settings.json> --server <id-or-name>
 python <skill-dir>\scripts\remote_ssh.py setup-key --settings <settings.json> --server <id-or-name>
 python <skill-dir>\scripts\remote_ssh.py check --settings <settings.json> --server <id-or-name>
 python <skill-dir>\scripts\remote_ssh.py workspace-check --settings <settings.json> --server <id-or-name>
@@ -57,12 +59,13 @@ Execute these checkpoints in order. Do not skip a checkpoint unless it is irrele
 5. List targets: use `list` for compact tabular inspection; use `--all` only when disabled servers matter.
 6. Prepare keys when needed: run `setup-key` to inspect local key files. If the private key is missing for an existing server, or `workspace-check` / `exec -- echo ok` fails with `Permission denied`, `publickey`, or another key-based authentication error, ask whether to run the guided key-only repair flow. `configure-key --interactive` only changes key_name and validation caches after successful verification; it must not change host, port, username, workdir, enabled, category, functions, or notes. For full server edits, use `configure --interactive` only after explicit user choice.
 7. Check target: run `check` before any `command`, `exec`, or `inventory` operation.
-8. Scan software: `add-server --interactive` runs a mandatory read-only software scan for enabled servers; use `scan-software` to refresh cached tool availability.
-9. Check workspace: run `workspace-check` after passwordless SSH is ready. It backs up the selected server-list JSON, writes `validation` and `workspace_check`, and refreshes cached `software_scan`.
-10. Read directly: `file-list`, `file-stat`, and `file-download` may run directly after checks.
-11. Request writes: use `request-upload`, `request-mkdir`, `request-delete`, or `request-command` before modifications or arbitrary commands.
-12. Execute explicitly: use `run-request --execute` only after reviewing the request and risks.
-13. Review output: inspect warnings, redaction, side effects, and failures before reporting results.
+8. Resolve project workdir: if the task belongs to a local project, use `project-show` to confirm whether `.erie-remote-ssh/project.local.json` or `project.json` is active. Use `project-init --interactive` before relying on a new project workdir; it checks the remote directory and asks whether to reuse, rename, timestamp, or cancel when a collision exists.
+9. Scan software: `add-server --interactive` runs a mandatory read-only software scan for enabled servers; use `scan-software` to refresh cached tool availability.
+10. Check workspace: run `workspace-check` after passwordless SSH is ready. Without project context it backs up the selected server-list JSON, writes `validation` and `workspace_check`, and refreshes cached `software_scan`. With project context it uses the project effective workdir, writes project workspace status to the project config, updates global SSH validation, and refreshes global `software_scan`.
+11. Read directly: `file-list`, `file-stat`, and `file-download` may run directly after checks.
+12. Request writes: use `request-upload`, `request-mkdir`, `request-delete`, or `request-command` before modifications or arbitrary commands.
+13. Execute explicitly: use `run-request --execute` only after reviewing the request and risks.
+14. Review output: inspect warnings, redaction, side effects, and failures before reporting results.
 
 ## Sensitive Output
 
@@ -76,7 +79,7 @@ If the requested server target, write action, host-key change, or other sensitiv
 
 ## Remote Execution
 
-`exec` runs the provided command through the remote user's shell after entering the configured `workdir`. It does not make arbitrary remote commands safe. Prefer `request-command` plus `run-request --execute` for engineering workflows that need review.
+`exec` runs the provided command through the remote user's shell after entering the effective `workdir`. The effective workdir is the active project workdir when a local project config is discovered, otherwise the server-list `workdir`. It does not make arbitrary remote commands safe. Prefer `request-command` plus `run-request --execute` for engineering workflows that need review.
 
 ## File Operations
 
@@ -101,6 +104,10 @@ Uploads also validate the local source. `request-upload --local` must resolve in
 Default configuration reads and writes skill-local `config/server_list.local.json` through `config/defaults.json`. Use `config/server_list.template.json` as the non-sensitive template, or use `--config <server-list.json>` when a user provides an explicit alternate server-list JSON.
 
 `add-server --interactive` stores an explicit `workdir` on every server entry. The default prompt value comes from `ssh.default_workdir`, which defaults to `~/workspace`.
+
+Project configuration is separate from server configuration. The helper automatically searches upward from the current directory for `.erie-remote-ssh/project.local.json`, then `.erie-remote-ssh/project.json`, unless `--no-project` is supplied. A project config stores a non-sensitive `project_id`, default server, and remote project workdir such as `~/workspace/<project_id>`; it must not store host, username, port, or key details. Use `--project-config` to choose a specific file, or `--project <id>` for a temporary project context.
+
+Use `project-init --interactive` to create local project config. It checks the candidate remote directory over BatchMode SSH before writing local JSON. If the directory already exists or another local project config already declares the same server/workdir pair, it must ask for `overwrite`, `rename`, `timestamp`, or `cancel`. `overwrite` means reuse the existing directory; it never deletes or clears remote files.
 
 `setup-key` checks local private/public key file presence and prints passwordless SSH setup guidance. It does not generate keys, copy public keys, edit `authorized_keys`, run `ssh-copy-id`, or rewrite SSH client configuration; use `configure-key --interactive` for existing-server key-only repair when the user chooses guided local key generation. Passwordless handoff still requires the user to log in to the remote account once with a password, console, existing jump host, or administrator path and append the public key to `~/.ssh/authorized_keys`; only after that should Codex run `check` and `exec -- echo ok`.
 

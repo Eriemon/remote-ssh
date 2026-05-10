@@ -2,7 +2,7 @@
   "version": 1,
   "paths": {
     "default_server_list": "${skill_dir}/config/server_list.local.json",
-    "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
+    "validation_tmp_dir": "${skill_dir}/reports/tmp/validation",
     "requests_dir": "${skill_dir}/reports/requests",
     "downloads_dir": "${skill_dir}/reports/downloads",
     "upload_roots": ["${project_root}"]
@@ -41,6 +41,12 @@
       "-o",
       "ConnectTimeout=${connect_timeout}"
     ]
+  },
+  "projects": {
+    "auto_discover": true,
+    "config_dir": ".erie-remote-ssh",
+    "config_names": ["project.local.json", "project.json"],
+    "default_workdir_template": "~/workspace/${project_id}"
   },
   "files": {
     "default_remote_tmp_dir": ".erie-remote-ssh",

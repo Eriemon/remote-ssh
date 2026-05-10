@@ -29,7 +29,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `config/server_list.template.json` exists and contains only placeholder, non-sensitive values.
 - Markdown files are UTF-8 without BOM, contain no replacement characters, and the Chinese encoding canary round-trips through source, dist directory, and zip artifacts.
 - Root and release `.gitattributes` declare UTF-8 working-tree encoding for `.gitattributes`, `.gitignore`, Markdown, YAML, and JSON text files.
-- Release artifacts are built with `scripts/build_release.py`; source, `dist/erie-remote-ssh`, `dist/erie-remote-ssh.zip`, and the installed skill key files match byte-for-byte when installed validation is enabled.
+- Release artifacts are built with `scripts/build_release.py`; source, `dist/erie-remote-ssh-v<version>`, `dist/erie-remote-ssh-v<version>.zip`, and the installed skill key files match byte-for-byte when installed validation is enabled.
 - Skill-local `.gitignore` ignores `config/server_list.local.json`, backups, `reports/`, legacy request/download roots, tmp/log output, and complements repository-level ignores.
 - Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, the operator asks whether to clear an existing `reports` directory and preserves it by default.
 
@@ -53,8 +53,10 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Passwordless verification keeps `BatchMode=yes` in default SSH options.
 - Server-list backups are ignored by git and do not expose sensitive details through committed files.
 - Request files do not contain real host, username, port, key name, or key path values.
+- Project config files do not contain real host, username, port, key name, or key path values.
 - `choices` output is redacted by default and does not connect, scan, or write the server list.
-- Download and request directories default under `reports/` and are ignored or kept out of commits.
+- Download, request, and validation temp directories default under `reports/` and are ignored or kept out of commits.
+- Default runtime paths must not create root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh`; only release builds intentionally create root-level `dist/`.
 
 ## Schema and Selection
 
@@ -87,6 +89,9 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `exec` and `inventory` use positive timeouts.
 - `scan-software` uses a positive timeout and writes only the local `software_scan` cache.
 - `workspace-check` uses a positive timeout, writes `validation` / `workspace_check`, and auto-refreshes `software_scan` after successful workspace validation.
+- With project context active, `workspace-check` uses the project effective workdir, writes project workspace status to project config, and does not overwrite global server `workspace_check`.
+- `project-init --interactive` checks the remote directory before writing local project config and asks for overwrite, rename, timestamp, or cancel on collisions.
+- Project-context request files record `project_id`, `effective_workdir`, and `workdir_source`; `run-request` uses the recorded workdir.
 - `workspace-check` and `exec -- echo ok` authentication failures include guidance to ask before running key-only `configure-key --interactive` repair.
 - `software` reads cached install status, prints multi-version rows from cached `versions`, and does not connect to the remote host.
 - Remote commands are short and non-destructive unless the user clearly requested otherwise.
@@ -104,6 +109,8 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Run discovery and add-server tests for missing lists, empty lists, enabled servers, backups, duplicate entries, same-host prompts, invalid ports, and empty required fields.
 - Run configure/update tests for manual mode, script mode, cancel mode, explicit no-default prompts, missing-key generate/disable/cancel branches, fake `ssh_keygen`, and server-list backups.
 - Run encoding tests for UTF-8 no-BOM Markdown, no replacement characters, Chinese canary consistency, and source/dist/zip byte consistency.
+- Run artifact-boundary tests confirming default requests, downloads, and validation temp paths stay under `${skill_dir}/reports/`, not root-level runtime directories.
+- Run project workdir tests for config discovery priority, `--project-config`, `--project`, `--no-project`, collision handling, project workspace cache separation, and request project-context binding.
 - Run software catalog tests for duplicate ids, invalid `path_scan`, unsafe executable globs, invalid directory scans, cached named-tool queries, multi-version table output, scan write-back, workspace-check write-back, and add-server scan write-back.
 - Run passwordless setup tests for existing private/public key files and missing-key guidance.
 - Run key-only repair tests for missing keys, generated keys, remote public-key confirmation, failed authentication, no-write failure behavior, and preservation of non-key server fields.

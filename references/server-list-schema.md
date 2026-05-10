@@ -78,3 +78,9 @@ The helper writes this object after a read-only remote software scan. Treat it a
 - `workspace-check` updates `validation`, `workspace_check`, and `software_scan` after creating a server-list backup.
 - Treat caches with an older `catalog_version` as potentially incomplete for multi-version software; refresh them before answering detailed install-version questions.
 - Do not use server-list fields to widen file-operation write access beyond `workdir` in v1.
+
+## Project Config Compatibility
+
+Project workdirs are intentionally not stored in the server list. A local `.erie-remote-ssh/project.local.json` or `.erie-remote-ssh/project.json` may override the effective workdir at runtime for one project while keeping the server-list `workdir` as the default login workspace.
+
+Project config v1 stores `project_id`, optional `default_server`, `remote_workdir`, and optional per-server `remote_workdir`, `remote_workdir_check`, and `workspace_check` cache entries. It must not store host, username, port, key name, or key path. Request files capture the project id and effective workdir used at review time so later execution does not silently switch projects.

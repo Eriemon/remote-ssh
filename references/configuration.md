@@ -49,7 +49,7 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 
 - `version`: Required integer. Use `1`.
 - `paths.default_server_list`: Server list JSON used when no CLI override is provided. The bundled default points to skill-local `config/server_list.local.json`.
-- `paths.validation_tmp_dir`: Temporary root directory used by validation. Each run creates and removes its own child directory.
+- `paths.validation_tmp_dir`: Temporary root directory used by validation. The bundled default is `${skill_dir}/reports/tmp/validation`; each run creates and removes its own child directory.
 - `paths.requests_dir`: Directory for generated request JSON files. The bundled default is `${skill_dir}/reports/requests`; keep it git-ignored.
 - `paths.downloads_dir`: Directory for `file-download` targets. The bundled default is `${skill_dir}/reports/downloads`; local download paths must stay inside this directory.
 - `paths.upload_roots`: Non-empty list of local directories allowed as `request-upload --local` sources. Defaults to `${project_root}`. Use explicit workspace or data directories for uploads outside the skill project; do not configure a filesystem root or the whole user home directory.
@@ -62,6 +62,10 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `ssh.connect_timeout`: Value injected into SSH option templates.
 - `ssh.safe_options`: Default SSH options. Keep host-key writes disabled here.
 - `ssh.accept_new_host_key_options`: Explicit opt-in options for accepting new host keys.
+- `projects.auto_discover`: Boolean. When true, commands automatically search upward from `${cwd}` for local project config.
+- `projects.config_dir`: Project config directory name. Defaults to `.erie-remote-ssh`.
+- `projects.config_names`: Ordered project config filenames. Defaults to `project.local.json`, then `project.json`.
+- `projects.default_workdir_template`: Template used by `--project <id>` and `project-init` when no explicit remote workdir is supplied. Defaults to `~/workspace/${project_id}`.
 - `files.default_remote_tmp_dir`: Reserved relative remote temp directory name for workflows that need one.
 - `files.max_transfer_bytes`: Maximum regular file size allowed for `file-download`.
 - `inventory.catalog_version`: Positive integer copied into cached software scans. Increment it when catalog behavior changes enough that old caches may be incomplete.
@@ -200,6 +204,42 @@ Use optional `category` and `functions` fields to make server selection clear wi
 
 When these fields are absent, `choices` displays `Uncategorized` and may infer display-only functions from `notes`, `inventory_snapshot.description`, and cached installed tools in `software_scan`.
 
+## Project Workdir Configuration
+
+Server-list `workdir` is the default remote directory for a login entry. Project config can override it at runtime without modifying the server list. This prevents one global server entry from forcing every task into a directory such as `~/workspace/validation`.
+
+Commands automatically search upward from the current directory for `.erie-remote-ssh/project.local.json`, then `.erie-remote-ssh/project.json`. Use `--project-config <json>` to select one explicitly, `--project <id>` to use a temporary `~/workspace/<id>` context, or `--no-project` to force the server-list `workdir`.
+
+Project config v1:
+
+```json
+{
+  "version": 1,
+  "project_id": "my_project",
+  "default_server": "server_1",
+  "remote_workdir": "~/workspace/my_project",
+  "servers": {
+    "server_1": {
+      "remote_workdir": "~/workspace/my_project",
+      "remote_workdir_check": {
+        "status": "available",
+        "checked_at": "2026-05-10T00:00:00Z"
+      },
+      "workspace_check": {
+        "status": "ok",
+        "checked_at": "2026-05-10T00:00:00Z"
+      }
+    }
+  }
+}
+```
+
+`project_id` must contain only letters, numbers, `_`, `-`, or `.`. Project config must not store host, username, port, key name, or key path.
+
+Use `project-init --project <id> --server <id-or-name> --interactive` to create `.erie-remote-ssh/project.local.json`. It checks the candidate remote directory over BatchMode SSH before writing local config. If the directory exists or another local project config declares the same server/workdir pair, it asks for `overwrite`, `rename`, `timestamp`, or `cancel`. `overwrite` reuses the directory; it does not delete, clear, or copy over remote files.
+
+With project context active, the effective workdir is resolved as server-specific project override, then project `remote_workdir`, then `projects.default_workdir_template`, then server-list `workdir`. Request files record `project_id`, `effective_workdir`, and `workdir_source` so `run-request` executes in the reviewed project directory even if launched from another local folder.
+
 ## Passwordless SSH Guidance
 
 Use `setup-key` to inspect local key readiness without modifying local or remote SSH state:
@@ -237,7 +277,7 @@ These scripts now call `configure --interactive`. The agent must ask the user be
   "version": 1,
   "paths": {
     "default_server_list": "${skill_dir}/config/server_list.local.json",
-    "validation_tmp_dir": "${project_root}/tmp/erie-remote-ssh-validation",
+    "validation_tmp_dir": "${skill_dir}/reports/tmp/validation",
     "requests_dir": "${skill_dir}/reports/requests",
     "downloads_dir": "${skill_dir}/reports/downloads",
     "upload_roots": ["${project_root}", "${cwd}"]
@@ -253,6 +293,12 @@ These scripts now call `configure --interactive`. The agent must ask the user be
   },
   "ssh": {
     "default_workdir": "~/workspace"
+  },
+  "projects": {
+    "auto_discover": true,
+    "config_dir": ".erie-remote-ssh",
+    "config_names": ["project.local.json", "project.json"],
+    "default_workdir_template": "~/workspace/${project_id}"
   }
 }
 ```
@@ -261,7 +307,9 @@ Keep sensitive server values in the server list, not in settings documentation.
 
 ## Request, Download, and Upload Directories
 
-The bundled runtime artifact root is `erie-remote-ssh/reports`. It is intentionally git-ignored and may contain request audit JSON and downloaded files. Before updating or replacing an installed skill directory from GitHub, a local directory, a release artifact, or another source, inspect the target `reports` directory. If it exists, ask the user whether to clear it or preserve it; preserve it unless the user explicitly confirms cleanup.
+The bundled runtime artifact root is `erie-remote-ssh/reports`. It is intentionally git-ignored and may contain request audit JSON, downloaded files, and validation temporary files. Before updating or replacing an installed skill directory from GitHub, a local directory, a release artifact, or another source, inspect the target `reports` directory. If it exists, ask the user whether to clear it or preserve it; preserve it unless the user explicitly confirms cleanup.
+
+Bundled defaults must not create root-level runtime directories next to `erie-remote-ssh`. In particular, default `requests`, `downloads`, validation `tmp`, `out`, and `remote-validation-bundles` paths do not belong at the repository root. `dist/` is the only root-level artifact directory produced by the release build helper.
 
 Request files are local audit artifacts. They record operation type, server id, relative paths, reason, risks, and timestamp; they do not store real hostnames, usernames, key names, key paths, or ports.
 

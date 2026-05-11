@@ -16,7 +16,7 @@ keywords:
   - workflow safety
 repository-code: "https://github.com/Eriemon/remote-ssh"
 url: "https://github.com/Eriemon/remote-ssh"
-version: "0.1.6"
-date-released: "2026-05-10"
+version: "0.1.7"
+date-released: "2026-05-11"
 year: 2026
 license: "Apache-2.0"

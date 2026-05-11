@@ -6,6 +6,7 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 
 - Progressive Loading
 - Discover Configuration
+- Use SSH Config Alias Fallback
 - Choose Configuration Mode
 - Add a Server When None Is Available
 - Use a Server List JSON
@@ -17,6 +18,7 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 - File Operations
 - Generate a Manual SSH Command
 - Run a Remote Command
+- Run and Inspect Detached Jobs
 - Collect Inventory
 - Troubleshooting
 - Output Handling
@@ -45,13 +47,38 @@ Discovery outcomes:
 - Exit `3`, `not_configured`: the server list file is missing.
 - Exit `4`, `no_enabled_ssh`: the server list exists but has no enabled SSH target.
 
-`discover --json` gives stable machine-readable fields for automation scripts. Discovery reads configured JSON only; it does not scan networks or probe unknown hosts.
+`discover --json` gives stable machine-readable fields for automation scripts. Discovery reads configured JSON and, only when the server list is missing, reads configured OpenSSH `Host` aliases as fallback hints. It does not scan networks, probe unknown hosts, generate keys, modify SSH config, or create server records.
+
+## Use SSH Config Alias Fallback
+
+When `discover` exits `3` with `ssh_config_fallback_available: true`, inspect aliases without connecting:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py ssh-config-discover --settings <settings>
+```
+
+Only simple `Host <alias>` entries are listed. Wildcard, negated, and pattern hosts are excluded. Default output shows alias names only; use `--show-sensitive` only when the user explicitly needs HostName, User, Port, or IdentityFile values.
+
+Temporary alias targets do not write server-list JSON and do not provide cached validation, workspace, or software status:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py command --settings <settings> --ssh-alias <alias>
+python <skill-dir>\scripts\remote_ssh.py exec --settings <settings> --ssh-alias <alias> -- echo ok
+```
+
+Use alias fallback to avoid bypassing the skill when a local SSH alias already exists. If the target becomes a regular workflow dependency, ask the user whether to create a persistent server-list record through guided configuration.
 
 ## Update or Replace the Skill
 
-Before updating or replacing an installed `erie-remote-ssh` directory from GitHub, a local directory, a release artifact, or another source, inspect `<target-skill-dir>/reports`. If it exists, ask the user whether to clear it or preserve it. Preserve it by default unless the user explicitly confirms cleanup.
+Before updating or replacing an installed `erie-remote-ssh` directory from GitHub, a local directory, a release artifact, or another source, use the safe installer:
 
-`reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests`, downloads to `${skill_dir}/reports/downloads`, and validation temp runs to `${skill_dir}/reports/tmp/validation`; custom settings may override these paths.
+```powershell
+python <skill-dir>\scripts\install_skill.py --source <release-or-skill-dir> --target <codex-home>\skills\erie-remote-ssh
+```
+
+The installer backs up the current installed skill to `${CODEX_HOME:-~/.codex}/skill-backups/erie-remote-ssh-YYYYMMDD-HHMMSS` before copying files. It must preserve the user's `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/` content, then report `preserved_hash_verified: true`. If copying fails after the backup is created, the installer must restore the backup rather than leave a mixed partial installation. If a source artifact contains `config/server_list.local.json` or a server-list backup, treat that artifact as unsafe and do not install it.
+
+`reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests`, downloads to `${skill_dir}/reports/downloads`, detached job manifests to `${skill_dir}/reports/jobs`, and validation temp runs to `${skill_dir}/reports/tmp/validation`; custom settings may override these paths.
 
 Do not treat root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` as normal output from this skill. `out` and `remote-validation-bundles` usually come from other skills or explicitly supplied output paths; root-level `requests`, `downloads`, and `tmp` may be historical artifacts from older defaults. The only root-level artifact directory this skill intentionally creates is `dist/` during release builds.
 
@@ -323,6 +350,28 @@ Guidelines:
 - Request files include a lightweight risk summary for obvious shell risks such as `sudo`, `rm`, redirection, pipes, backgrounding, and absolute paths.
 - Increase `--timeout` only when the remote command is expected to take longer.
 - Do not use `--accept-new-host-key` unless the user accepts that OpenSSH may update `known_hosts`.
+- If a user writes `exec --cmd "..."` or `request-command --cmd "..."`, retry with the delimiter form: `exec ... -- <remote command>`.
+
+## Run and Inspect Detached Jobs
+
+Use detached jobs for long Vitis, Vivado, Vitis HLS, build, emulation, board-run, or other commands where local SSH timeouts should not be treated as remote failure:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py exec-detached --settings <settings> --server <id-or-name> --reason "run hw emulation" -- make hw_emu
+python <skill-dir>\scripts\remote_ssh.py status --settings <settings> --server <id-or-name> --job <job-id>
+python <skill-dir>\scripts\remote_ssh.py tail-log --settings <settings> --server <id-or-name> --job <job-id>
+```
+
+For reviewed commands, create a detached request and execute it explicitly:
+
+```powershell
+python <skill-dir>\scripts\remote_ssh.py request-command --settings <settings> --server <id-or-name> --reason "run hardware link" --detached -- make hw
+python <skill-dir>\scripts\remote_ssh.py run-request --settings <settings> --request <request.json> --execute
+```
+
+Detached startup creates `workdir/.erie-remote-ssh/jobs/<job-id>/` on the remote host with `runner.sh`, `pid`, `command.txt`, `reason.txt`, `stdout.log`, `exit_code`, `started_at`, and `finished_at` files. The local manifest is written under `${skill_dir}/reports/jobs` by default. `tail-log` accepts only a job id and line count, not arbitrary remote paths.
+
+Interpret local SSH timeout as a transport boundary. Use `status` and `tail-log` to decide whether the remote job is still running, succeeded, failed, or needs manual inspection.
 
 ## Collect Inventory
 

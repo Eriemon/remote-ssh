@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -1406,6 +1407,349 @@ def discovery_and_add_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError("add-server summary cancellation should leave the server list unchanged")
 
 
+def ssh_config_fallback_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
+    missing_list = tmp_dir / "ssh-config-fallback" / "missing-server-list.json"
+    ssh_config = tmp_dir / "ssh-config-fallback" / "ssh_config"
+    included_config = tmp_dir / "ssh-config-fallback" / "included_config"
+    ssh_config.parent.mkdir(parents=True, exist_ok=True)
+    included_config.write_text(
+        "\n".join(
+            [
+                "Host included-alias",
+                "  HostName included-secret.example.invalid",
+                "  User included-user",
+                "  IdentityFile \"~/.ssh/id included\"",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ssh_config.write_text(
+        "\n".join(
+            [
+                f"Include {included_config}",
+                "Host fpga-u55c",
+                "  HostName \"secret-host.example.invalid\" # inline comment",
+                "  User \"secret-user\"",
+                "  Port 2200 # inline comment",
+                "  IdentityFile ~/.ssh/id_secret # inline comment",
+                "",
+                "Host *",
+                "  ForwardAgent no",
+                "",
+                "Host pattern-?",
+                "  HostName pattern.example.invalid",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temp_settings = copy_settings_with_server_list(settings, tmp_dir / "ssh-config-fallback-settings.json", missing_list)
+    settings_copy = load_ref(temp_settings)
+    settings_copy.setdefault("ssh", {})["config_path"] = str(ssh_config)
+    settings_copy["tools"]["ssh_client"] = str(create_fake_ssh(tmp_dir / "ssh-config-fallback-fake-ssh", output="alias ok\n"))
+    write_json(temp_settings, settings_copy)
+
+    discover_result = run_tool(["discover", "--settings", str(temp_settings)], expected=3)
+    assert_contains(discover_result.stdout, "status: not_configured", "ssh-config fallback discover output")
+    assert_contains(discover_result.stdout, "ssh_config_fallback_available: true", "ssh-config fallback discover output")
+    assert_contains(discover_result.stdout, "ssh_config_alias_count: 2", "ssh-config fallback discover output")
+    assert_not_contains(discover_result.stdout, "secret-host.example.invalid", "ssh-config fallback discover output")
+    assert_not_contains(discover_result.stdout, "secret-user", "ssh-config fallback discover output")
+    assert_not_contains(discover_result.stdout, "included-secret.example.invalid", "ssh-config fallback discover output")
+
+    discover_json = run_tool(["discover", "--settings", str(temp_settings), "--json"], expected=3)
+    discover_data = json.loads(discover_json.stdout)
+    if discover_data.get("status") != "not_configured" or discover_data.get("ssh_config_alias_count") != 2:
+        raise ValidationError(f"unexpected ssh-config fallback discover json: {discover_json.stdout}")
+    assert_not_contains(discover_json.stdout, "secret-host.example.invalid", "ssh-config fallback discover json")
+    assert_not_contains(discover_json.stdout, "secret-user", "ssh-config fallback discover json")
+    assert_not_contains(discover_json.stdout, "included-secret.example.invalid", "ssh-config fallback discover json")
+
+    alias_result = run_tool(["ssh-config-discover", "--settings", str(temp_settings)])
+    assert_contains(alias_result.stdout, "status: available", "ssh-config-discover output")
+    assert_contains(alias_result.stdout, "alias: fpga-u55c", "ssh-config-discover output")
+    assert_contains(alias_result.stdout, "alias: included-alias", "ssh-config-discover output")
+    assert_not_contains(alias_result.stdout, "pattern-?", "ssh-config-discover output")
+    assert_not_contains(alias_result.stdout, "secret-host.example.invalid", "ssh-config-discover output")
+    assert_not_contains(alias_result.stdout, "secret-user", "ssh-config-discover output")
+    assert_not_contains(alias_result.stdout, "included-secret.example.invalid", "ssh-config-discover output")
+
+    alias_sensitive = run_tool(["ssh-config-discover", "--settings", str(temp_settings), "--show-sensitive"])
+    assert_contains(alias_sensitive.stdout, "hostname: secret-host.example.invalid", "ssh-config-discover sensitive output")
+    assert_contains(alias_sensitive.stdout, "user: secret-user", "ssh-config-discover sensitive output")
+    assert_contains(alias_sensitive.stdout, "port: 2200", "ssh-config-discover sensitive output")
+    assert_contains(alias_sensitive.stdout, "hostname: included-secret.example.invalid", "ssh-config-discover sensitive output")
+    assert_contains(alias_sensitive.stdout, "identity_file: ~/.ssh/id included", "ssh-config-discover sensitive output")
+
+    command_result = run_tool(["command", "--settings", str(temp_settings), "--ssh-alias", "fpga-u55c"])
+    assert_contains(command_result.stdout, "ssh", "ssh-alias command output")
+    assert_contains(command_result.stdout, "fpga-u55c", "ssh-alias command output")
+    assert_not_contains(command_result.stdout, "secret-host.example.invalid", "ssh-alias command output")
+    assert_not_contains(command_result.stdout, "secret-user", "ssh-alias command output")
+
+    exec_result = run_tool(["exec", "--settings", str(temp_settings), "--ssh-alias", "fpga-u55c", "--", "echo", "ok"])
+    assert_contains(exec_result.stdout, "alias ok", "ssh-alias exec output")
+    if missing_list.exists():
+        raise ValidationError("ssh-config fallback commands must not create a server list")
+
+
+def cmd_guidance_tests(settings: dict[str, Any], settings_path: Path, server_list: Path, ref_config: dict, tmp_dir: Path) -> None:
+    base = tool_base_args(settings_path, server_list)
+    server_id = clone_first_server(ref_config)["id"]
+    exec_result = run_tool(["exec", *base, "--server", server_id, "--cmd", "echo ok"], expected=2)
+    assert_contains(exec_result.stderr, "Use: remote_ssh.py exec ... -- <remote command>", "exec --cmd guidance")
+    assert_contains(exec_result.stderr, "received unsupported --cmd", "exec --cmd guidance")
+
+    request_result = run_tool(["request-command", *base, "--server", server_id, "--reason", "validation", "--cmd", "echo ok"], expected=2)
+    assert_contains(request_result.stderr, "Use: remote_ssh.py request-command ... -- <remote command>", "request-command --cmd guidance")
+
+    literal_cmd = run_tool(["request-command", *base, "--server", server_id, "--reason", "literal flag", "--", "--cmd", "echo"])
+    request = request_from_output(literal_cmd.stdout)
+    if request.get("payload", {}).get("command") != "--cmd echo":
+        raise ValidationError(f"--cmd after -- should remain part of the remote command: {request}")
+
+    literal_settings = copy_settings_with_server_list(settings, tmp_dir / "literal-cmd-settings.json", server_list)
+    literal_settings_copy = load_ref(literal_settings)
+    literal_settings_copy["tools"]["ssh_client"] = str(create_fake_ssh(tmp_dir / "literal-cmd-fake-ssh", output="ran\n"))
+    write_json(literal_settings, literal_settings_copy)
+    literal_exec = run_tool(["exec", "--settings", str(literal_settings), "--server", server_id, "--", "printf", "--cmd %s", "ok"])
+    assert_contains(literal_exec.stdout, "ran", "exec literal --cmd output")
+
+
+def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
+    server_list = create_validation_server_list(tmp_dir / "detached-jobs")
+    config = load_ref(server_list)
+    server_id = config["servers"][0]["id"]
+    requests_root = tmp_dir / "detached-requests"
+    jobs_root = tmp_dir / "detached-local-jobs"
+    temp_settings = copy_settings_with_server_list(settings, tmp_dir / "detached-settings.json", server_list, requests_dir=requests_root)
+    settings_copy = load_ref(temp_settings)
+    settings_copy.setdefault("jobs", {})["local_dir"] = str(jobs_root)
+    settings_copy["jobs"]["remote_dir"] = ".erie-remote-ssh/jobs"
+    settings_copy["jobs"]["default_tail_lines"] = 2
+    settings_copy["tools"]["ssh_client"] = str(
+        create_sequence_fake_ssh(
+            tmp_dir / "detached-fake-ssh",
+            [
+                {"stdout": "job_id: job-abc\nremote_job_dir: ~/workspace/.erie-remote-ssh/jobs/job-abc\npid: 12345\nstatus: started\n", "returncode": 0},
+                {"stdout": "status: running\npid: 12345\nexit_code:\n", "returncode": 0},
+                {"stdout": "line two\nline three\n", "returncode": 0},
+                {"stdout": "ok\n", "returncode": 0},
+                {"stdout": "job_id: job-def\nremote_job_dir: ~/workspace/.erie-remote-ssh/jobs/job-def\npid: 12346\nstatus: started\n", "returncode": 0},
+                {"stdout": "status: succeeded\npid: 12346\nexit_code: 0\n", "returncode": 0},
+                {"stdout": "status: not_found\npid:\nexit_code:\n", "returncode": 0},
+            ],
+        )
+    )
+    write_json(temp_settings, settings_copy)
+
+    start_result = run_tool(["exec-detached", "--settings", str(temp_settings), "--server", server_id, "--reason", "long validation", "--", "sleep", "30"])
+    assert_contains(start_result.stdout, "status: started", "exec-detached output")
+    assert_contains(start_result.stdout, "job_id: job-abc", "exec-detached output")
+    manifest = jobs_root / "job-abc.json"
+    if not manifest.exists():
+        raise ValidationError("exec-detached did not write a local job manifest")
+    manifest_data = load_ref(manifest)
+    if manifest_data.get("server") != server_id or manifest_data.get("command") != "sleep 30":
+        raise ValidationError(f"unexpected exec-detached manifest: {manifest_data}")
+
+    status_result = run_tool(["status", "--settings", str(temp_settings), "--job", "job-abc"])
+    assert_contains(status_result.stdout, "status: running", "job status output")
+
+    tail_result = run_tool(["tail-log", "--settings", str(temp_settings), "--job", "job-abc"])
+    assert_contains(tail_result.stdout, "line two", "tail-log output")
+    assert_contains(tail_result.stdout, "line three", "tail-log output")
+    assert_not_contains(tail_result.stdout, "line one", "tail-log output")
+
+    request_result = run_tool(["request-command", "--settings", str(temp_settings), "--server", server_id, "--reason", "detached validation", "--detached", "--", "make", "hw"])
+    detached_request = request_from_output(request_result.stdout)
+    if detached_request.get("payload", {}).get("detached") is not True:
+        raise ValidationError(f"request-command --detached did not mark the request: {detached_request}")
+
+    run_result = run_tool(["run-request", "--settings", str(temp_settings), "--request", str(requests_root / f"{detached_request['request_id']}.json"), "--execute"])
+    assert_contains(run_result.stdout, "status: started", "detached run-request output")
+    assert_contains(run_result.stdout, "job_id: job-def", "detached run-request output")
+
+    succeeded = run_tool(["status", "--settings", str(temp_settings), "--server", server_id, "--job", "job-def"])
+    assert_contains(succeeded.stdout, "status: succeeded", "succeeded job status output")
+    missing = run_tool(["status", "--settings", str(temp_settings), "--server", server_id, "--job", "missing-job"], expected=3)
+    assert_contains(missing.stdout, "status: not_found", "missing job status output")
+
+
+def write_fake_skill_tree(root: Path, marker: str, include_local_server_list: bool = False) -> None:
+    files = {
+        "SKILL.md": f"---\nname: erie-remote-ssh\ndescription: {marker}\n---\n{marker}\n",
+        "VERSION": "9.9.9\n",
+        "agents/openai.yaml": f"display_name: {marker}\n",
+        "config/defaults.json": '{"version": 1, "marker": "' + marker + '"}\n',
+        "config/server_list.template.json": '{"version": 1, "servers": []}\n',
+        "references/configuration.md": marker + "\n",
+        "references/workflows.md": marker + "\n",
+        "references/review-checklist.md": marker + "\n",
+        "scripts/remote_ssh.py": f"# {marker}\n",
+        "scripts/validate_remote_ssh.py": f"# {marker}\n",
+    }
+    if include_local_server_list:
+        files["config/server_list.local.json"] = '{"sentinel": "source must not install"}\n'
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def install_skill_protection_tests(tmp_dir: Path) -> None:
+    installer = SKILL_DIR / "scripts" / "install_skill.py"
+    codex_home = tmp_dir / "codex-home"
+    target = codex_home / "skills" / "erie-remote-ssh"
+    source = tmp_dir / "release-source"
+    write_fake_skill_tree(target, "original installed")
+    local_config = target / "config" / "server_list.local.json"
+    local_backup = target / "config" / "server_list.local.json.bak.20260510"
+    report_file = target / "reports" / "requests" / "sentinel.json"
+    stale_release_file = target / "references" / "removed-in-new-release.md"
+    local_config.write_text('{"sentinel": "preserve local config"}\n', encoding="utf-8")
+    local_backup.write_text('{"sentinel": "preserve local backup"}\n', encoding="utf-8")
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text('{"sentinel": "preserve reports"}\n', encoding="utf-8")
+    stale_release_file.write_text("old release-only file\n", encoding="utf-8")
+    write_fake_skill_tree(source, "new release")
+
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    result = subprocess.run(
+        [sys.executable, str(installer), "--source", str(source), "--target", str(target)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValidationError(f"install_skill.py failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    assert_contains(result.stdout, "backup:", "installer output")
+    assert_contains(result.stdout, "preserved: config/server_list.local.json", "installer output")
+    assert_contains(result.stdout, "preserved_hash_verified: true", "installer output")
+    if local_config.read_text(encoding="utf-8") != '{"sentinel": "preserve local config"}\n':
+        raise ValidationError("installer overwrote config/server_list.local.json")
+    if local_backup.read_text(encoding="utf-8") != '{"sentinel": "preserve local backup"}\n':
+        raise ValidationError("installer overwrote server_list.local.json backup")
+    if report_file.read_text(encoding="utf-8") != '{"sentinel": "preserve reports"}\n':
+        raise ValidationError("installer removed reports content")
+    if "new release" not in (target / "SKILL.md").read_text(encoding="utf-8"):
+        raise ValidationError("installer did not update release-managed files")
+    if stale_release_file.exists():
+        raise ValidationError("installer left stale release-managed files from the old target")
+    backups = list((codex_home / "skill-backups").glob("erie-remote-ssh-*"))
+    if not backups:
+        raise ValidationError("installer did not create a backup under CODEX_HOME/skill-backups")
+    backup_config = backups[0] / "config" / "server_list.local.json"
+    if backup_config.read_text(encoding="utf-8") != '{"sentinel": "preserve local config"}\n':
+        raise ValidationError("installer backup did not contain the original local server list")
+
+    bad_source = tmp_dir / "bad-source"
+    write_fake_skill_tree(bad_source, "bad release", include_local_server_list=True)
+    before_reject = local_config.read_bytes()
+    reject = subprocess.run(
+        [sys.executable, str(installer), "--source", str(bad_source), "--target", str(target)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if reject.returncode == 0:
+        raise ValidationError("installer should reject a source containing config/server_list.local.json")
+    assert_contains(reject.stderr, "Refusing to install protected local file", "installer protected file rejection")
+    if local_config.read_bytes() != before_reject:
+        raise ValidationError("rejected install changed config/server_list.local.json")
+
+    runtime_source = tmp_dir / "runtime-source"
+    write_fake_skill_tree(runtime_source, "runtime release")
+    runtime_file = runtime_source / "reports" / "requests" / "source-runtime.json"
+    runtime_file.parent.mkdir(parents=True, exist_ok=True)
+    runtime_file.write_text('{"sentinel": "source runtime must not install"}\n', encoding="utf-8")
+    before_runtime_reject = local_config.read_bytes()
+    runtime_reject = subprocess.run(
+        [sys.executable, str(installer), "--source", str(runtime_source), "--target", str(target)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if runtime_reject.returncode == 0:
+        raise ValidationError("installer should reject a source containing reports runtime files")
+    assert_contains(runtime_reject.stderr, "Refusing to install runtime artifact", "installer runtime source rejection")
+    assert_not_contains(runtime_reject.stderr, "Traceback", "installer runtime source rejection")
+    if local_config.read_bytes() != before_runtime_reject:
+        raise ValidationError("runtime source rejection changed config/server_list.local.json")
+
+    backup_block_home = tmp_dir / "backup-block-codex-home"
+    backup_block_target = backup_block_home / "skills" / "erie-remote-ssh"
+    backup_block_source = tmp_dir / "backup-block-source"
+    write_fake_skill_tree(backup_block_target, "backup block original")
+    write_fake_skill_tree(backup_block_source, "backup block new release")
+    backup_block_config = backup_block_target / "config" / "server_list.local.json"
+    backup_block_config.write_text('{"sentinel": "backup block local config"}\n', encoding="utf-8")
+    backup_block_root = backup_block_home / "skill-backups"
+    backup_block_root.parent.mkdir(parents=True, exist_ok=True)
+    backup_block_root.write_text("path blocks backup directory\n", encoding="utf-8")
+    backup_block_env = os.environ.copy()
+    backup_block_env["CODEX_HOME"] = str(backup_block_home)
+    backup_block = subprocess.run(
+        [sys.executable, str(installer), "--source", str(backup_block_source), "--target", str(backup_block_target)],
+        cwd=ROOT,
+        env=backup_block_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if backup_block.returncode == 0:
+        raise ValidationError("installer should fail cleanly when skill-backups is not a directory")
+    assert_contains(backup_block.stderr, "Install failed", "installer backup directory error")
+    assert_not_contains(backup_block.stderr, "Traceback", "installer backup directory error")
+    if "backup block original" not in (backup_block_target / "SKILL.md").read_text(encoding="utf-8"):
+        raise ValidationError("backup directory failure changed release-managed files")
+    if backup_block_config.read_text(encoding="utf-8") != '{"sentinel": "backup block local config"}\n':
+        raise ValidationError("backup directory failure changed protected local config")
+
+    rollback_home = tmp_dir / "rollback-codex-home"
+    rollback_target = rollback_home / "skills" / "erie-remote-ssh"
+    rollback_source = tmp_dir / "rollback-source"
+    write_fake_skill_tree(rollback_target, "rollback original")
+    rollback_config = rollback_target / "config" / "server_list.local.json"
+    rollback_report = rollback_target / "reports" / "requests" / "rollback.json"
+    rollback_config.write_text('{"sentinel": "rollback local config"}\n', encoding="utf-8")
+    rollback_report.parent.mkdir(parents=True, exist_ok=True)
+    rollback_report.write_text('{"sentinel": "rollback reports"}\n', encoding="utf-8")
+    write_fake_skill_tree(rollback_source, "rollback new release")
+    blocking_dir = rollback_source / "config" / "server_list.local.json"
+    blocking_dir.mkdir()
+    (blocking_dir / "source-owned.txt").write_text("source path blocks protected config migration\n", encoding="utf-8")
+    rollback_env = os.environ.copy()
+    rollback_env["CODEX_HOME"] = str(rollback_home)
+    rollback = subprocess.run(
+        [sys.executable, str(installer), "--source", str(rollback_source), "--target", str(rollback_target)],
+        cwd=ROOT,
+        env=rollback_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if rollback.returncode == 0:
+        raise ValidationError("installer should fail when a target path blocks release file copy")
+    assert_contains(rollback.stderr, "Install failed", "installer rollback error")
+    assert_not_contains(rollback.stderr, "Traceback", "installer rollback error")
+    if "rollback original" not in (rollback_target / "SKILL.md").read_text(encoding="utf-8"):
+        raise ValidationError("failed install did not roll back release-managed files")
+    if rollback_config.read_text(encoding="utf-8") != '{"sentinel": "rollback local config"}\n':
+        raise ValidationError("failed install changed protected local config")
+    if rollback_report.read_text(encoding="utf-8") != '{"sentinel": "rollback reports"}\n':
+        raise ValidationError("failed install changed protected reports")
+
+
 def configuration_gate_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     gate_list = tmp_dir / "gate" / "server_list.local.json"
     gate_settings = copy_settings_with_server_list(settings, tmp_dir / "gate-settings.json", gate_list)
@@ -2074,6 +2418,13 @@ def request_path_from_output(output: str) -> Path:
     raise ValidationError(f"request path not found in output:\n{output}")
 
 
+def job_id_from_output(output: str) -> str:
+    for line in output.splitlines():
+        if line.startswith("job_id: "):
+            return line.split("job_id: ", 1)[1].strip()
+    raise ValidationError(f"job id not found in output:\n{output}")
+
+
 def ssh_tests(settings: dict[str, Any], settings_path: Path, server_list: Path, tmp_dir: Path) -> None:
     ssh_settings = copy_settings_with_server_list(
         settings,
@@ -2150,6 +2501,37 @@ def ssh_tests(settings: dict[str, Any], settings_path: Path, server_list: Path, 
         command_request = request_path_from_output(command_result.stdout)
         command_exec = run_tool(["run-request", "--settings", str(ssh_settings), "--config", str(server_list), "--request", str(command_request), "--execute", "--timeout", timeout])
         assert_contains(command_exec.stdout, "ok", "run-request command output")
+
+        detached = run_tool(
+            [
+                "exec-detached",
+                *base,
+                "--server",
+                ssh_server,
+                "--reason",
+                "validation detached smoke",
+                "--timeout",
+                timeout,
+                "--",
+                "printf 'detached line one\\n'; sleep 1; printf 'detached line two\\n'",
+            ]
+        )
+        detached_job = job_id_from_output(detached.stdout)
+        final_status = ""
+        for _ in range(8):
+            status_result = run_tool(
+                ["status", "--settings", str(ssh_settings), "--config", str(server_list), "--job", detached_job, "--timeout", timeout],
+                expected={0, 3},
+            )
+            final_status = status_result.stdout
+            if "status: succeeded" in final_status:
+                break
+            time.sleep(1)
+        assert_contains(final_status, "status: succeeded", "detached job status output")
+        tail_result = run_tool(["tail-log", "--settings", str(ssh_settings), "--config", str(server_list), "--job", detached_job, "--lines", "2", "--timeout", timeout])
+        assert_contains(tail_result.stdout, "detached line one", "detached tail output")
+        assert_contains(tail_result.stdout, "detached line two", "detached tail output")
+        run_tool(["exec", *base, "--server", ssh_server, "--timeout", timeout, "--", "rm", "-rf", f".erie-remote-ssh/jobs/{detached_job}"], expected={0, 1})
 
         run_tool(["file-list", *base, "--server", ssh_server, "--path", "../escape"], expected=1)
     finally:
@@ -2722,6 +3104,7 @@ def installed_skill_audit() -> None:
         "references/configuration.md",
         "references/workflows.md",
         "references/review-checklist.md",
+        "scripts/install_skill.py",
         "scripts/remote_ssh.py",
         "scripts/validate_remote_ssh.py",
     ]
@@ -2736,7 +3119,7 @@ def installed_skill_audit() -> None:
         (installed / rel).read_text(encoding="utf-8")
         for rel in ["SKILL.md", "references/configuration.md", "references/workflows.md", "references/review-checklist.md"]
     )
-    required = ["configure-key", ENCODING_CANARY, "field-menu"]
+    required = ["configure-key", ENCODING_CANARY, "field-menu", "skill-backups", "server_list.local.json"]
     for marker in required:
         if marker not in installed_text:
             raise ValidationError(f"installed skill missing current marker {marker!r}: {installed}")
@@ -2833,6 +3216,7 @@ def design_pattern_audit() -> None:
     lower_text = skill_text.casefold()
     required_paths = [
         SKILL_DIR / "scripts" / "remote_ssh.py",
+        SKILL_DIR / "scripts" / "install_skill.py",
         SKILL_DIR / "config" / "server_list.template.json",
         SKILL_DIR / "references" / "review-checklist.md",
     ]
@@ -2841,6 +3225,7 @@ def design_pattern_audit() -> None:
             raise ValidationError(f"missing required skill design artifact: {path.relative_to(SKILL_DIR).as_posix()}")
     required_mentions = [
         "scripts/remote_ssh.py",
+        "scripts/install_skill.py",
         "config/server_list.template.json",
         "references/review-checklist.md",
         "configure-key",
@@ -3013,6 +3398,10 @@ def main() -> int:
         workspace_check_writeback_tests(settings, tmp_dir)
         project_workdir_tests(settings, tmp_dir)
         discovery_and_add_tests(settings, tmp_dir)
+        ssh_config_fallback_tests(settings, tmp_dir)
+        cmd_guidance_tests(settings, settings_path, server_list, ref_config, tmp_dir)
+        detached_job_tests(settings, tmp_dir)
+        install_skill_protection_tests(tmp_dir)
         configuration_gate_tests(settings, tmp_dir)
         request_and_path_tests(settings, settings_path, server_list, ref_config, tmp_dir)
         passwordless_setup_tests(settings, tmp_dir)
@@ -3026,7 +3415,13 @@ def main() -> int:
             if args.server_list is None:
                 raise ValidationError("--with-ssh requires --server-list for a real SSH configuration.")
             real_server_list = args.server_list.resolve()
-            ssh_tests(settings, settings_path, real_server_list, tmp_dir)
+            before_hash = file_sha256(real_server_list)
+            copied_real_server_list = tmp_dir / "real-ssh-server-list.copy.json"
+            copied_real_server_list.write_bytes(real_server_list.read_bytes())
+            ssh_tests(settings, settings_path, copied_real_server_list, tmp_dir)
+            after_hash = file_sha256(real_server_list)
+            if before_hash != after_hash:
+                raise ValidationError("real --server-list input changed during --with-ssh validation")
     finally:
         cleanup_generated_dirs(tmp_dir, cleanup_roots)
 

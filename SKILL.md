@@ -19,13 +19,14 @@ Do not use it for purely local development, local file editing, ordinary FPGA/RT
 
 ## Update / Reports Preservation
 
-Before updating or replacing this skill from GitHub, a local directory, a release artifact, or another source, inspect the target `erie-remote-ssh/reports` directory. If it exists, ask the user whether to clear it or preserve it. Preserve `reports` by default unless the user explicitly confirms cleanup. `reports` is a local runtime artifact root and is not managed by git. Bundled defaults keep requests, downloads, and validation temp runs under `reports`; root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` are not normal output from this skill. Root-level `dist/` is reserved for release builds.
+Before updating or replacing this skill from GitHub, a local directory, a release artifact, or another source, use `scripts/install_skill.py` so the existing installed skill is backed up under `${CODEX_HOME:-~/.codex}/skill-backups` before installation. Never delete or overwrite the user's installed `config/server_list.local.json`, `config/server_list.local.json.bak.*`, or `reports/` content; the installer must report `preserved_hash_verified: true`, and failed copies must restore the backup instead of leaving a partial install. Preserve `reports` by default unless the user explicitly confirms cleanup. `reports` is a local runtime artifact root and is not managed by git. Bundled defaults keep requests, downloads, jobs, and validation temp runs under `reports`; root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` are not normal output from this skill. Root-level `dist/` is reserved for release builds.
 
 Use `scripts/remote_ssh.py` for deterministic operations whenever possible:
 
 ```powershell
 python <skill-dir>\scripts\remote_ssh.py list --settings <settings.json>
 python <skill-dir>\scripts\remote_ssh.py discover --settings <settings.json>
+python <skill-dir>\scripts\remote_ssh.py ssh-config-discover --settings <settings.json>
 python <skill-dir>\scripts\remote_ssh.py choices --settings <settings.json>
 python <skill-dir>\scripts\remote_ssh.py choices --settings <settings.json> --host <host-or-ip>
 python <skill-dir>\scripts\remote_ssh.py configure --settings <settings.json> --interactive
@@ -43,6 +44,11 @@ python <skill-dir>\scripts\remote_ssh.py request-command --settings <settings.js
 python <skill-dir>\scripts\remote_ssh.py run-request --settings <settings.json> --request <request.json> --execute
 python <skill-dir>\scripts\remote_ssh.py command --settings <settings.json> --server <id-or-name>
 python <skill-dir>\scripts\remote_ssh.py exec --settings <settings.json> --server <id-or-name> -- <remote command>
+python <skill-dir>\scripts\remote_ssh.py command --settings <settings.json> --ssh-alias <host-alias>
+python <skill-dir>\scripts\remote_ssh.py exec --settings <settings.json> --ssh-alias <host-alias> -- <remote command>
+python <skill-dir>\scripts\remote_ssh.py exec-detached --settings <settings.json> --server <id-or-name> --reason <text> -- <remote command>
+python <skill-dir>\scripts\remote_ssh.py status --settings <settings.json> --server <id-or-name> --job <job-id>
+python <skill-dir>\scripts\remote_ssh.py tail-log --settings <settings.json> --server <id-or-name> --job <job-id>
 python <skill-dir>\scripts\remote_ssh.py scan-software --settings <settings.json> --server <id-or-name>
 python <skill-dir>\scripts\remote_ssh.py software --settings <settings.json> --server <id-or-name> [--name <tool>]
 python <skill-dir>\scripts\remote_ssh.py inventory --settings <settings.json> --server <id-or-name>
@@ -53,7 +59,7 @@ python <skill-dir>\scripts\remote_ssh.py inventory --settings <settings.json> --
 Execute these checkpoints in order. Do not skip a checkpoint unless it is irrelevant to the user's requested task.
 
 1. Read settings: prefer user-provided `--settings`; otherwise use the skill's default settings.
-2. Discover configuration: run `discover` before assuming a server list or usable SSH target exists.
+2. Discover configuration: run `discover` before assuming a server list or usable SSH target exists. If the server list is missing and `discover` reports `ssh_config_fallback_available: true`, use `ssh-config-discover` to show read-only OpenSSH aliases; `--ssh-alias` targets are temporary and must not be written back automatically.
 3. Choose configuration mode before changes: before adding or modifying server configuration, fixing a missing private key, repairing failed passwordless SSH, creating an initial server list, or handling a list with no enabled servers, ask the user in the conversation whether they want manual instructions, the guided configuration script, or cancellation. Do not launch `configure --interactive`, `add-server --interactive`, `update-server --interactive`, or a platform wrapper until the user explicitly chooses guided script configuration. Do not launch `configure-key --interactive` until the user explicitly chooses guided script configuration for key-only repair.
 4. Present choices: if the server list exists and the user has not already named a server, run `choices` and show every selectable server grouped by category and function; wait for the user to choose an id or name before remote access. If the user names only a host/IP, run `choices --host <host>`; when multiple logins exist for that host, ask which id or port to use before connecting. If only one enabled server exists, still present it and confirm unless the user already selected it.
 5. List targets: use `list` for compact tabular inspection; use `--all` only when disabled servers matter.
@@ -63,7 +69,7 @@ Execute these checkpoints in order. Do not skip a checkpoint unless it is irrele
 9. Scan software: `add-server --interactive` runs a mandatory read-only software scan for enabled servers; use `scan-software` to refresh cached tool availability.
 10. Check workspace: run `workspace-check` after passwordless SSH is ready. Without project context it backs up the selected server-list JSON, writes `validation` and `workspace_check`, and refreshes cached `software_scan`. With project context it uses the project effective workdir, writes project workspace status to the project config, updates global SSH validation, and refreshes global `software_scan`.
 11. Read directly: `file-list`, `file-stat`, and `file-download` may run directly after checks.
-12. Request writes: use `request-upload`, `request-mkdir`, `request-delete`, or `request-command` before modifications or arbitrary commands.
+12. Request writes: use `request-upload`, `request-mkdir`, `request-delete`, or `request-command` before modifications or arbitrary commands. For long Vitis, Vivado, Vitis HLS, build, emulation, or board-run commands, prefer `exec-detached` or `request-command --detached` so `status` and `tail-log` can take over after local SSH timeout boundaries.
 13. Execute explicitly: use `run-request --execute` only after reviewing the request and risks.
 14. Review output: inspect warnings, redaction, side effects, and failures before reporting results.
 
@@ -79,7 +85,9 @@ If the requested server target, write action, host-key change, or other sensitiv
 
 ## Remote Execution
 
-`exec` runs the provided command through the remote user's shell after entering the effective `workdir`. The effective workdir is the active project workdir when a local project config is discovered, otherwise the server-list `workdir`. It does not make arbitrary remote commands safe. Prefer `request-command` plus `run-request --execute` for engineering workflows that need review.
+`exec` runs the provided command through the remote user's shell after entering the effective `workdir`. The effective workdir is the active project workdir when a local project config is discovered, otherwise the server-list `workdir`. It does not make arbitrary remote commands safe. Prefer `request-command` plus `run-request --execute` for engineering workflows that need review. `exec --ssh-alias <alias>` is a temporary OpenSSH-config fallback mode and does not use a server-list `workdir`.
+
+`exec-detached` starts a reviewed long-running command under the effective `workdir`, writes a local job manifest under `reports/jobs`, and returns a job id for `status` and `tail-log`. Treat a synchronous SSH timeout as a transport boundary, not proof that the remote command failed; detached jobs provide the evidence needed to decide whether to wait, inspect logs, or rerun.
 
 ## File Operations
 
@@ -89,7 +97,7 @@ Uploads also validate the local source. `request-upload --local` must resolve in
 
 ## Configuration Discovery
 
-`discover` only inspects configured JSON. It does not scan networks, probe arbitrary hosts, generate SSH keys, or modify SSH client state.
+`discover` only inspects configured JSON and, when the server list is missing, reads configured OpenSSH `Host` aliases as a fallback hint. It does not scan networks, probe unknown hosts, generate SSH keys, modify SSH config, or create server records. `ssh-config-discover` excludes wildcard/pattern aliases and redacts HostName/User/Port/IdentityFile unless `--show-sensitive` is explicit.
 
 `configure --interactive` is the configuration gate. Use it after the user has explicitly chosen guided script configuration in the conversation. Inside the CLI, the user must explicitly enter `script`, `manual`, or `cancel`; pressing Enter does not choose a default. Guided mode can initialize a missing list, add a server, update a server, and generate a local SSH key only after showing the target path and receiving explicit confirmation. It does not install public keys on the remote host.
 

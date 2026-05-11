@@ -57,11 +57,15 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `tools.scp_client`: SCP executable name or path.
 - `tools.ssh_keygen`: SSH key generator executable name or path. Defaults to `ssh-keygen`; validation may replace it with a fake helper.
 - `tools.skill_validator_candidates`: Ordered `quick_validate.py` candidates.
+- `ssh.config_path`: OpenSSH config path used by `ssh-config-discover` and `--ssh-alias` fallback. Defaults to `${home}/.ssh/config`.
 - `ssh.default_workdir`: Default workdir prompt value for newly added servers. Defaults to `~/workspace`.
 - `ssh.default_timeout`: Positive integer timeout for remote validation commands.
 - `ssh.connect_timeout`: Value injected into SSH option templates.
 - `ssh.safe_options`: Default SSH options. Keep host-key writes disabled here.
 - `ssh.accept_new_host_key_options`: Explicit opt-in options for accepting new host keys.
+- `jobs.remote_dir`: Relative directory under effective remote `workdir` for detached job state. Defaults to `.erie-remote-ssh/jobs`.
+- `jobs.local_dir`: Local directory for detached job manifests. Defaults to `${skill_dir}/reports/jobs`.
+- `jobs.default_tail_lines`: Positive integer default for `tail-log --lines`. Defaults to `80`.
 - `projects.auto_discover`: Boolean. When true, commands automatically search upward from `${cwd}` for local project config.
 - `projects.config_dir`: Project config directory name. Defaults to `.erie-remote-ssh`.
 - `projects.config_names`: Ordered project config filenames. Defaults to `project.local.json`, then `project.json`.

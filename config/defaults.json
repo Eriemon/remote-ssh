@@ -18,6 +18,7 @@
     ]
   },
   "ssh": {
+    "config_path": "${home}/.ssh/config",
     "default_workdir": "~/workspace",
     "default_timeout": 20,
     "connect_timeout": 10,
@@ -41,6 +42,11 @@
       "-o",
       "ConnectTimeout=${connect_timeout}"
     ]
+  },
+  "jobs": {
+    "remote_dir": ".erie-remote-ssh/jobs",
+    "local_dir": "${skill_dir}/reports/jobs",
+    "default_tail_lines": 80
   },
   "projects": {
     "auto_discover": true,

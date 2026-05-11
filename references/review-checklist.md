@@ -21,6 +21,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Paths, validation targets, and tool locations are settings-driven rather than hardcoded in scripts.
 - Software inventory probes, multi-version PATH scans, executable globs, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
 - Discovery and add-server workflows are represented in `SKILL.md` without bloating the skill body.
+- SSH config alias fallback and detached job workflows are represented in `SKILL.md` without bloating the skill body.
 - The configuration gate is documented at both levels: the agent asks the user in conversation first, and the CLI requires explicit manual/script/cancel input before any server-list mutation.
 - Key-only repair is documented at both levels: the agent asks the user before running `configure-key --interactive`, and the CLI writes only after candidate-key verification.
 - Platform wrappers stay thin and delegate to `scripts/remote_ssh.py`.
@@ -31,7 +32,11 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Root and release `.gitattributes` declare UTF-8 working-tree encoding for `.gitattributes`, `.gitignore`, Markdown, YAML, and JSON text files.
 - Release artifacts are built with `scripts/build_release.py`; source, `dist/erie-remote-ssh-v<version>`, `dist/erie-remote-ssh-v<version>.zip`, and the installed skill key files match byte-for-byte when installed validation is enabled.
 - Skill-local `.gitignore` ignores `config/server_list.local.json`, backups, `reports/`, legacy request/download roots, tmp/log output, and complements repository-level ignores.
-- Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, the operator asks whether to clear an existing `reports` directory and preserves it by default.
+- Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, `scripts/install_skill.py` creates a backup under `${CODEX_HOME:-~/.codex}/skill-backups`, preserves installed `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/`, and reports `preserved_hash_verified: true`.
+- Failed installations restore the backup and do not leave a partial mixed installed skill.
+- Source artifacts must not contain `config/server_list.local.json` or server-list backup files; installation must reject them instead of overwriting user configuration.
+- Source artifacts must not contain runtime directories such as `reports/`, `requests/`, `downloads/`, `tmp/`, or `logs/`; installation must reject them instead of silently skipping or reporting them as preserved.
+- Backup directory failures, including a non-directory `${CODEX_HOME:-~/.codex}/skill-backups` path, must fail with a clean `error:` message and no traceback while leaving the installed target unchanged.
 
 ## Safety and Privacy
 
@@ -43,6 +48,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Guided key generation shows the target path, requires confirmation, refuses overwrite, explains the required one-time manual remote login, and never installs public keys remotely.
 - Inventory output is treated as a report and does not update the source JSON; `scan-software` is the explicit write-back path for `software_scan`.
 - `discover` reads configuration only and does not scan networks or probe unknown hosts.
+- Missing server-list fallback reads OpenSSH config aliases only, excludes wildcard/pattern hosts, redacts sensitive HostName/User/Port/IdentityFile values by default, and never writes a server record.
 - `add-server --interactive` does not generate keys without explicit user confirmation, modify SSH config, or scan networks; enabled additions connect only for the mandatory read-only software scan.
 - `configure --interactive`, `add-server --interactive`, and `update-server --interactive` ask how to handle a missing private key before writing an enabled unusable entry.
 - `configure-key --interactive` is limited to `key_name`, `validation`, `workspace_check`, and `software_scan`; it must not modify host, port, username, workdir, enabled, category, functions, or notes.
@@ -52,6 +58,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `setup-key` does not generate keys, copy public keys, run `ssh-copy-id`, edit `authorized_keys`, modify `~/.ssh`, or rewrite SSH config.
 - Passwordless verification keeps `BatchMode=yes` in default SSH options.
 - Server-list backups are ignored by git and do not expose sensitive details through committed files.
+- Installed user server lists and backups are never compared to source/release artifacts and are never overwritten during installation.
 - Request files do not contain real host, username, port, key name, or key path values.
 - Project config files do not contain real host, username, port, key name, or key path values.
 - `choices` output is redacted by default and does not connect, scan, or write the server list.
@@ -87,6 +94,9 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - `check` runs before `command`, `exec`, or `inventory`.
 - `command` does not connect.
 - `exec` and `inventory` use positive timeouts.
+- `command --ssh-alias` does not connect or read/write the server list; `exec --ssh-alias` uses OpenSSH alias fallback without forcing `-i` or cached workdir metadata.
+- `exec --cmd` and `request-command --cmd` fail with a clear delimiter migration hint, while `--cmd` after `--` remains part of the remote command.
+- `exec-detached` and `request-command --detached` create remote job state under the effective `workdir` and local manifests under `reports/jobs`; `status` and `tail-log` operate by job id, not arbitrary remote paths.
 - `scan-software` uses a positive timeout and writes only the local `software_scan` cache.
 - `workspace-check` uses a positive timeout, writes `validation` / `workspace_check`, and auto-refreshes `software_scan` after successful workspace validation.
 - With project context active, `workspace-check` uses the project effective workdir, writes project workspace status to project config, and does not overwrite global server `workspace_check`.
@@ -107,6 +117,8 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Run negative CLI tests for malformed JSON, unsupported version, invalid server entries, invalid fields, disabled targets, missing keys, and invalid timeouts.
 - Run configuration tests for default settings, copied settings, environment-variable paths, and CLI overrides.
 - Run discovery and add-server tests for missing lists, empty lists, enabled servers, backups, duplicate entries, same-host prompts, invalid ports, and empty required fields.
+- Run SSH config fallback tests for missing server lists, alias redaction, wildcard exclusion, `--show-sensitive`, `command --ssh-alias`, `exec --ssh-alias`, and no server-list mutation.
+- Run detached job tests for startup manifests, running/succeeded/failed status, tail-log line limits, and detached request execution.
 - Run configure/update tests for manual mode, script mode, cancel mode, explicit no-default prompts, missing-key generate/disable/cancel branches, fake `ssh_keygen`, and server-list backups.
 - Run encoding tests for UTF-8 no-BOM Markdown, no replacement characters, Chinese canary consistency, and source/dist/zip byte consistency.
 - Run artifact-boundary tests confirming default requests, downloads, and validation temp paths stay under `${skill_dir}/reports/`, not root-level runtime directories.
@@ -121,5 +133,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Run wrapper tests for `.bat`, `.ps1`, and `.sh` entry points where the runner exists.
 - Run isolated no-ref validation from a temporary copy that does not contain a repository-level `ref` directory.
 - Run installed-skill validation after copying the refreshed artifact into `$CODEX_HOME/skills/erie-remote-ssh`; stale installed files must fail validation.
+- Run safe installer tests proving backups land under `$CODEX_HOME/skill-backups`, installed `server_list.local.json`, backup files, and `reports/` survive installation unchanged, protected hashes are verified, and failed copies roll back.
+- Run installer rejection tests for source runtime artifacts and invalid backup directory paths; both must leave the target unchanged and print no traceback.
 - Confirm `--with-ssh` requires an explicit real `--server-list`; without one, only offline skill development confidence can be claimed.
 - Confirm `git status` is clean after validation.

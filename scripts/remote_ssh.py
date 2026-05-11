@@ -181,6 +181,40 @@ def default_workdir(settings: dict[str, Any]) -> str:
     return value.strip()
 
 
+def default_ssh_config_path(settings: dict[str, Any]) -> Path:
+    value = settings_value(settings, "ssh", "config_path", default="${home}/.ssh/config")
+    if not isinstance(value, str) or not value.strip():
+        raise RemoteSshError("Settings field ssh.config_path must be a non-empty string.")
+    return resolve_config_path(value, settings_path(settings), settings["_context"])
+
+
+def jobs_remote_dir(settings: dict[str, Any]) -> str:
+    value = settings_value(settings, "jobs", "remote_dir", default=".erie-remote-ssh/jobs")
+    if not isinstance(value, str) or not value.strip():
+        raise RemoteSshError("Settings field jobs.remote_dir must be a non-empty string.")
+    return remote_relative_path(value, allow_dot=False)
+
+
+def jobs_local_dir(settings: dict[str, Any]) -> Path:
+    value = settings_value(settings, "jobs", "local_dir", default="${skill_dir}/reports/jobs")
+    if not isinstance(value, str) or not value.strip():
+        raise RemoteSshError("Settings field jobs.local_dir must be a non-empty string.")
+    return resolve_config_path(value, settings_path(settings), settings["_context"])
+
+
+def default_tail_lines(settings: dict[str, Any]) -> int:
+    value = settings_value(settings, "jobs", "default_tail_lines", default=80)
+    if isinstance(value, bool):
+        raise RemoteSshError("Settings field jobs.default_tail_lines must be a positive integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RemoteSshError("Settings field jobs.default_tail_lines must be a positive integer.") from exc
+    if parsed < 1:
+        raise RemoteSshError("Settings field jobs.default_tail_lines must be a positive integer.")
+    return parsed
+
+
 def project_auto_discover(settings: dict[str, Any]) -> bool:
     value = settings_value(settings, "projects", "auto_discover", default=True)
     return bool(value)
@@ -382,6 +416,15 @@ class ProjectContext:
     data: dict[str, Any]
     effective_workdir: str
     workdir_source: str
+
+
+@dataclass(frozen=True)
+class SshConfigAlias:
+    alias: str
+    hostname: str = ""
+    user: str = ""
+    port: str = ""
+    identity_file: str = ""
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -785,6 +828,107 @@ def redact_text(config: dict[str, Any], value: str) -> str:
     return redacted
 
 
+def ssh_config_has_pattern(alias: str) -> bool:
+    return any(char in alias for char in "*?!")
+
+
+def ssh_config_tokens(line: str) -> list[str]:
+    try:
+        tokens = shlex.split(line, comments=True, posix=False)
+    except ValueError:
+        tokens = line.split()
+    return [token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'} else token for token in tokens]
+
+
+def parse_ssh_config(path: Path, seen: set[Path] | None = None) -> list[SshConfigAlias]:
+    if not path.exists():
+        return []
+    resolved_path = path.resolve()
+    seen_paths = seen or set()
+    if resolved_path in seen_paths:
+        return []
+    seen_paths.add(resolved_path)
+    aliases: list[SshConfigAlias] = []
+    current_hosts: list[str] = []
+    current_options: dict[str, str] = {}
+    in_match_block = False
+
+    def flush() -> None:
+        nonlocal current_hosts, current_options
+        for alias in current_hosts:
+            if ssh_config_has_pattern(alias):
+                continue
+            aliases.append(
+                SshConfigAlias(
+                    alias=alias,
+                    hostname=current_options.get("hostname", ""),
+                    user=current_options.get("user", ""),
+                    port=current_options.get("port", ""),
+                    identity_file=current_options.get("identityfile", ""),
+                )
+            )
+        current_hosts = []
+        current_options = {}
+
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise RemoteSshError(f"Unable to read SSH config: {path}") from exc
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = ssh_config_tokens(line)
+        if not tokens:
+            continue
+        key = tokens[0].lower()
+        values = tokens[1:]
+        if key == "match":
+            flush()
+            in_match_block = True
+            continue
+        if key == "host":
+            in_match_block = False
+            flush()
+            current_hosts = [item for item in values if item and not item.startswith("!")]
+            continue
+        if key == "include" and not current_hosts and not in_match_block:
+            for include_value in values:
+                include_path = Path(os.path.expandvars(os.path.expanduser(include_value)))
+                if not include_path.is_absolute():
+                    include_path = resolved_path.parent / include_path
+                for include_match in sorted(include_path.parent.glob(include_path.name)):
+                    aliases.extend(parse_ssh_config(include_match, seen_paths))
+            continue
+        if current_hosts and not in_match_block and key in {"hostname", "user", "port", "identityfile"} and values:
+            current_options.setdefault(key, values[0])
+    flush()
+    return aliases
+
+
+def select_ssh_alias(settings: dict[str, Any], alias: str, config_path: Path | None = None) -> SshConfigAlias:
+    requested = str(alias or "").strip()
+    if not requested:
+        raise RemoteSshError("SSH alias must not be empty.")
+    for record in parse_ssh_config((config_path or default_ssh_config_path(settings)).resolve()):
+        if record.alias == requested:
+            return record
+    raise RemoteSshError(f"SSH alias not found in config: {requested}")
+
+
+def redact_ssh_alias_text(record: SshConfigAlias, value: str) -> str:
+    redacted = value
+    for item in sorted(
+        [record.hostname, record.user, record.port, record.identity_file],
+        key=len,
+        reverse=True,
+    ):
+        if item:
+            redacted = redacted.replace(item, REDACTED)
+    return redacted
+
+
 def user_host(server: Server) -> str:
     if not server.username or not server.host:
         raise RemoteSshError(f"Server {server.label} is missing username or host.")
@@ -810,6 +954,22 @@ def build_ssh_args(
     ]
     if server.workdir and remote_command:
         remote_command = f"cd {quote_remote_path(server.workdir)} && {remote_command}"
+    if remote_command:
+        args.append(remote_command)
+    return args
+
+
+def build_ssh_alias_args(
+    settings: dict[str, Any],
+    alias: str,
+    remote_command: str | None = None,
+    accept_new_host_key: bool = False,
+) -> list[str]:
+    args = [
+        ssh_client(settings),
+        *ssh_options(settings, accept_new_host_key),
+        alias,
+    ]
     if remote_command:
         args.append(remote_command)
     return args
@@ -1452,6 +1612,13 @@ def grouped_choice_records(records: list[dict[str, Any]]) -> dict[str, list[dict
 
 def discover_summary(settings: dict[str, Any], config_path: Path) -> tuple[dict[str, Any], int]:
     if not config_path.exists():
+        aliases = parse_ssh_config(default_ssh_config_path(settings))
+        next_steps = [
+            "Run scripts/bat/config/configure_remote_ssh.bat, scripts/shell/config/configure_remote_ssh.sh, or scripts/powershell/config/configure_remote_ssh.ps1",
+            "Or run remote_ssh.py init-config then remote_ssh.py add-server --interactive",
+        ]
+        if aliases:
+            next_steps.append("Or run remote_ssh.py ssh-config-discover for read-only temporary SSH alias targets.")
         return (
             {
                 "status": "not_configured",
@@ -1459,10 +1626,10 @@ def discover_summary(settings: dict[str, Any], config_path: Path) -> tuple[dict[
                 "server_list_path": REDACTED,
                 "server_count": 0,
                 "enabled_ssh_count": 0,
-                "next_steps": [
-                    "Run scripts/bat/config/configure_remote_ssh.bat, scripts/shell/config/configure_remote_ssh.sh, or scripts/powershell/config/configure_remote_ssh.ps1",
-                    "Or run remote_ssh.py init-config then remote_ssh.py add-server --interactive",
-                ],
+                "ssh_config_fallback_available": bool(aliases),
+                "ssh_config_alias_count": len(aliases),
+                "ssh_config_aliases": [{"alias": record.alias} for record in aliases],
+                "next_steps": next_steps,
             },
             3,
         )
@@ -1505,11 +1672,69 @@ def cmd_discover(args: argparse.Namespace) -> int:
     print(f"server_list_exists: {summary['server_list_exists']}")
     print(f"server_count: {summary['server_count']}")
     print(f"enabled_ssh_count: {summary['enabled_ssh_count']}")
+    if "ssh_config_fallback_available" in summary:
+        print(f"ssh_config_fallback_available: {str(summary['ssh_config_fallback_available']).lower()}")
+        print(f"ssh_config_alias_count: {summary['ssh_config_alias_count']}")
+        for alias in summary.get("ssh_config_aliases", []):
+            print(f"ssh_config_alias: {alias['alias']}")
     for server in summary.get("enabled_ssh_servers", []):
         print(f"- {server['id']}: {server['name']}")
     for step in summary["next_steps"]:
         print(f"next: {step}")
     return exit_code
+
+
+def cmd_ssh_config_discover(args: argparse.Namespace) -> int:
+    settings = load_settings(args.settings)
+    config_path = (args.ssh_config or default_ssh_config_path(settings)).resolve()
+    aliases = parse_ssh_config(config_path)
+    status = "available" if aliases else "not_configured"
+    if args.json:
+        payload: dict[str, Any] = {
+            "status": status,
+            "ssh_config_exists": config_path.exists(),
+            "ssh_config_path": str(config_path) if args.show_sensitive else REDACTED,
+            "alias_count": len(aliases),
+            "aliases": [
+                {
+                    "alias": record.alias,
+                    **(
+                        {
+                            "hostname": record.hostname,
+                            "user": record.user,
+                            "port": record.port,
+                            "identity_file": record.identity_file,
+                        }
+                        if args.show_sensitive
+                        else {}
+                    ),
+                }
+                for record in aliases
+            ],
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if aliases else 3
+
+    print(f"status: {status}")
+    print(f"ssh_config_exists: {str(config_path.exists()).lower()}")
+    print(f"ssh_config_path: {config_path if args.show_sensitive else REDACTED}")
+    print(f"alias_count: {len(aliases)}")
+    for record in aliases:
+        print(f"alias: {record.alias}")
+        if args.show_sensitive:
+            if record.hostname:
+                print(f"  hostname: {record.hostname}")
+            if record.user:
+                print(f"  user: {record.user}")
+            if record.port:
+                print(f"  port: {record.port}")
+            if record.identity_file:
+                print(f"  identity_file: {record.identity_file}")
+    if aliases:
+        print("next: use command or exec with --ssh-alias <alias> for a temporary read-only alias target.")
+        return 0
+    print("next: create a server list or add simple Host aliases to the selected SSH config.")
+    return 3
 
 
 def cmd_choices(args: argparse.Namespace) -> int:
@@ -2835,7 +3060,10 @@ def cmd_request_delete(args: argparse.Namespace) -> int:
 def cmd_request_command(args: argparse.Namespace) -> int:
     _, settings, server, project = prepare_server_for_remote_with_project(args)
     command = remote_command_from_tokens(args.remote_command)
-    path = create_request(settings, "command", server, {"command": command}, reason=args.reason, project=project)
+    payload: dict[str, Any] = {"command": command}
+    if args.detached:
+        payload["detached"] = True
+    path = create_request(settings, "command", server, payload, reason=args.reason, project=project)
     print_request_created(path, load_request(path))
     return 0
 
@@ -2857,6 +3085,180 @@ def execute_remote_simple(
     return result.returncode
 
 
+def job_id(operation: str = "job") -> str:
+    now = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{now}-{operation}-{uuid.uuid4().hex[:8]}"
+
+
+def parse_key_value_output(output: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def write_job_manifest(settings: dict[str, Any], manifest: dict[str, Any]) -> Path:
+    directory = jobs_local_dir(settings)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{manifest['job_id']}.json"
+    write_json_atomic(path, manifest)
+    return path
+
+
+def load_job_manifest(settings: dict[str, Any], job: str) -> dict[str, Any] | None:
+    path = jobs_local_dir(settings) / f"{job}.json"
+    if not path.exists():
+        return None
+    data = load_json_file(path, "Job manifest")
+    if data.get("version") != 1:
+        raise RemoteSshError(f"Unsupported job manifest version: {data.get('version')!r}")
+    return data
+
+
+def select_job_server(
+    config: dict[str, Any],
+    settings: dict[str, Any],
+    requested_server: str | None,
+    allow_disabled: bool,
+    job: str,
+) -> Server:
+    manifest = load_job_manifest(settings, job)
+    manifest_server = str(manifest.get("server", "")) if manifest else ""
+    selector = str(requested_server or manifest_server).strip()
+    if not selector:
+        raise RemoteSshError("status/tail-log requires --server when no local job manifest exists.")
+    if requested_server and manifest_server and str(requested_server) != manifest_server:
+        raise RemoteSshError("Requested --server does not match the local job manifest.")
+    server = select_server(config, selector, allow_disabled)
+    if manifest and manifest.get("effective_workdir"):
+        server = server_with_workdir(server, validate_remote_workdir(str(manifest["effective_workdir"])))
+    return server
+
+
+def print_job_start(manifest: dict[str, Any], manifest_path: Path | None = None) -> None:
+    print("status: started")
+    print(f"job_id: {manifest['job_id']}")
+    print(f"server: {manifest['server']}")
+    if manifest.get("project_id"):
+        print(f"project: {manifest['project_id']}")
+    print(f"remote_job_dir: {manifest['remote_job_dir']}")
+    if manifest.get("pid"):
+        print(f"pid: {manifest['pid']}")
+    if manifest_path is not None:
+        print(f"manifest: {manifest_path}")
+
+
+def build_detached_start_command(settings: dict[str, Any], requested_job_id: str, command: str, reason: str) -> str:
+    remote_root = jobs_remote_dir(settings)
+    remote_job_dir = f"{remote_root}/{requested_job_id}"
+    runner = "\n".join(
+        [
+            "#!/bin/sh",
+            "cd \"$(dirname \"$0\")\" || exit 97",
+            "date -u +%Y-%m-%dT%H:%M:%SZ > started_at",
+            "sh -c \"$ERIE_REMOTE_SSH_COMMAND\" > stdout.log 2>&1",
+            "code=$?",
+            "printf '%s\\n' \"$code\" > exit_code",
+            "date -u +%Y-%m-%dT%H:%M:%SZ > finished_at",
+            "exit \"$code\"",
+        ]
+    )
+    return "\n".join(
+        [
+            f"job_id={shlex.quote(requested_job_id)}",
+            f"job_dir={shlex.quote(remote_job_dir)}",
+            "mkdir -p -- \"$job_dir\" || exit $?",
+            f"printf '%s\\n' {shlex.quote(command)} > \"$job_dir/command.txt\"",
+            f"printf '%s\\n' {shlex.quote(reason)} > \"$job_dir/reason.txt\"",
+            f"cat > \"$job_dir/runner.sh\" <<'ERIE_REMOTE_SSH_RUNNER'\n{runner}\nERIE_REMOTE_SSH_RUNNER",
+            "chmod +x \"$job_dir/runner.sh\"",
+            f"ERIE_REMOTE_SSH_COMMAND={shlex.quote(command)} nohup sh \"$job_dir/runner.sh\" >/dev/null 2>&1 &",
+            "pid=$!",
+            "printf '%s\\n' \"$pid\" > \"$job_dir/pid\"",
+            "printf 'job_id: %s\\n' \"$job_id\"",
+            "printf 'remote_job_dir: %s\\n' \"$job_dir\"",
+            "printf 'pid: %s\\n' \"$pid\"",
+            "printf 'status: started\\n'",
+        ]
+    )
+
+
+def start_detached_job(
+    config: dict[str, Any],
+    settings: dict[str, Any],
+    server: Server,
+    command: str,
+    reason: str,
+    timeout: int,
+    project: ProjectContext | None = None,
+) -> tuple[dict[str, Any], Path]:
+    requested_job_id = job_id("job")
+    remote_command = build_detached_start_command(settings, requested_job_id, command, reason)
+    result = run_ssh(build_ssh_args(config, settings, server, remote_command), timeout)
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr)
+        raise RemoteSshError(redact_text(config, summary) or "Detached job start failed.")
+    parsed = parse_key_value_output(result.stdout)
+    actual_job_id = parsed.get("job_id") or requested_job_id
+    remote_job_dir = parsed.get("remote_job_dir") or f"{jobs_remote_dir(settings)}/{actual_job_id}"
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "job_id": actual_job_id,
+        "server": server.id,
+        "reason": reason,
+        "command": command,
+        "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
+        "remote_job_dir": remote_job_dir,
+        "stdout_log": f"{remote_job_dir.rstrip('/')}/stdout.log",
+        "pid": parsed.get("pid", ""),
+        "status": "started",
+    }
+    if project is not None:
+        manifest.update(project_output_record(project))
+    manifest_path = write_job_manifest(settings, manifest)
+    return manifest, manifest_path
+
+
+def remote_job_dir_for(settings: dict[str, Any], job: str) -> str:
+    clean = remote_relative_path(job, allow_dot=False)
+    if "/" in clean:
+        raise RemoteSshError("Job id must not contain path separators.")
+    return f"{jobs_remote_dir(settings)}/{clean}"
+
+
+def build_job_status_command(settings: dict[str, Any], job: str) -> str:
+    remote_job_dir = remote_job_dir_for(settings, job)
+    return "\n".join(
+        [
+            f"job_dir={shlex.quote(remote_job_dir)}",
+            "pid=''",
+            "[ -f \"$job_dir/pid\" ] && pid=$(cat \"$job_dir/pid\" 2>/dev/null || true)",
+            "exit_code=''",
+            "[ -f \"$job_dir/exit_code\" ] && exit_code=$(cat \"$job_dir/exit_code\" 2>/dev/null || true)",
+            "if [ -n \"$exit_code\" ]; then",
+            "  if [ \"$exit_code\" = 0 ]; then status=succeeded; else status=failed; fi",
+            "elif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then",
+            "  status=running",
+            "elif [ -d \"$job_dir\" ]; then",
+            "  status=unknown",
+            "else",
+            "  status=not_found",
+            "fi",
+            "printf 'status: %s\\n' \"$status\"",
+            "printf 'pid: %s\\n' \"$pid\"",
+            "printf 'exit_code: %s\\n' \"$exit_code\"",
+        ]
+    )
+
+
+def build_tail_log_command(settings: dict[str, Any], job: str, lines: int) -> str:
+    remote_job_dir = remote_job_dir_for(settings, job)
+    return f"tail -n {int(lines)} -- {shlex.quote(remote_job_dir + '/stdout.log')}"
+
+
 def cmd_run_request(args: argparse.Namespace) -> int:
     if not args.execute:
         raise RemoteSshError("run-request requires --execute.")
@@ -2867,12 +3269,20 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     if errors:
         raise RemoteSshError("Server local precheck failed: " + "; ".join(errors))
     request_project_id = request.get("project_id")
+    request_project_context: ProjectContext | None = None
     if request_project_id:
         current_project, _ = project_config_for_args(args, settings, server)
         if current_project is not None and str(current_project.get("project_id")) != str(request_project_id):
             raise RemoteSshError("Current project context does not match the request project_id.")
         effective_workdir = validate_remote_workdir(str(request.get("effective_workdir", "")))
         server = server_with_workdir(server, effective_workdir)
+        request_project_context = ProjectContext(
+            project_id=str(request_project_id),
+            config_path=None,
+            data={},
+            effective_workdir=effective_workdir,
+            workdir_source=str(request.get("workdir_source", "project")),
+        )
 
     operation = str(request["operation"])
     payload = request["payload"]
@@ -2940,6 +3350,18 @@ def cmd_run_request(args: argparse.Namespace) -> int:
         command = str(payload.get("command", "")).strip()
         if not command:
             raise RemoteSshError("Command request has an empty command.")
+        if payload.get("detached") is True:
+            manifest, manifest_path = start_detached_job(
+                config,
+                settings,
+                server,
+                command,
+                str(request.get("reason", "")),
+                timeout,
+                project=request_project_context,
+            )
+            print_job_start(manifest, manifest_path)
+            return 0
         return execute_remote_simple(config, settings, server, command, timeout)
 
     raise RemoteSshError(f"Unsupported request operation: {operation}")
@@ -3158,6 +3580,15 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_command(args: argparse.Namespace) -> int:
+    if getattr(args, "ssh_alias", None):
+        settings = load_settings(args.settings)
+        record = select_ssh_alias(settings, args.ssh_alias, args.ssh_config)
+        command = display_command(build_ssh_alias_args(settings, record.alias, accept_new_host_key=args.accept_new_host_key))
+        print(command if args.show_sensitive else redact_ssh_alias_text(record, command))
+        return 0
+    if not args.server:
+        raise RemoteSshError("command requires --server or --ssh-alias.")
+
     config, settings, _ = load_config_for_args(args)
     server = select_server(config, args.server, args.allow_disabled)
     errors = validate_server(config, server)
@@ -3174,6 +3605,23 @@ def cmd_command(args: argparse.Namespace) -> int:
 
 
 def cmd_exec(args: argparse.Namespace) -> int:
+    if getattr(args, "ssh_alias", None):
+        settings = load_settings(args.settings)
+        record = select_ssh_alias(settings, args.ssh_alias, args.ssh_config)
+        remote_command = remote_command_from_tokens(args.remote_command)
+        timeout = args.timeout if args.timeout is not None else default_timeout(settings)
+        result = run_ssh(build_ssh_alias_args(settings, record.alias, remote_command, args.accept_new_host_key), timeout)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode != 0:
+            summary = summarize_error(result.stderr)
+            if summary:
+                print(redact_ssh_alias_text(record, summary), file=sys.stderr)
+            return result.returncode
+        return 0
+    if not args.server:
+        raise RemoteSshError("exec requires --server or --ssh-alias.")
+
     config, settings, _ = load_config_for_args(args)
     server = select_server(config, args.server, args.allow_disabled)
     errors = validate_server(config, server)
@@ -3196,6 +3644,79 @@ def cmd_exec(args: argparse.Namespace) -> int:
         if summary:
             print(redact_text(config, summary), file=sys.stderr)
         print_key_only_repair_guidance(summary or "")
+        return result.returncode
+    return 0
+
+
+def cmd_exec_detached(args: argparse.Namespace) -> int:
+    config, settings, _ = load_config_for_args(args)
+    server = select_server(config, args.server, args.allow_disabled)
+    errors = validate_server(config, server)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        return 2
+
+    remote_command = remote_command_from_tokens(args.remote_command)
+    timeout = args.timeout if args.timeout is not None else default_timeout(settings)
+    server, project = server_for_args_project(args, settings, server)
+    manifest, manifest_path = start_detached_job(config, settings, server, remote_command, args.reason, timeout, project=project)
+    print_job_start(manifest, manifest_path)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    config, settings, _ = load_config_for_args(args)
+    server = select_job_server(config, settings, args.server, args.allow_disabled, args.job)
+    errors = validate_server(config, server)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        return 2
+    timeout = args.timeout if args.timeout is not None else default_timeout(settings)
+    result = run_ssh(build_ssh_args(config, settings, server, build_job_status_command(settings, args.job)), timeout)
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr)
+        if summary:
+            print(redact_text(config, summary), file=sys.stderr)
+        return result.returncode
+    parsed = parse_key_value_output(result.stdout)
+    status_value = parsed.get("status", "unknown")
+    exit_code_text = parsed.get("exit_code", "")
+    if args.json:
+        print(json.dumps({"job_id": args.job, **parsed}, indent=2, ensure_ascii=False))
+    else:
+        print(f"job_id: {args.job}")
+        print(f"status: {status_value}")
+        print(f"pid: {parsed.get('pid', '')}")
+        print(f"exit_code: {exit_code_text}")
+    if status_value == "failed":
+        try:
+            return int(exit_code_text)
+        except ValueError:
+            return 1
+    if status_value == "not_found":
+        return 3
+    return 0
+
+
+def cmd_tail_log(args: argparse.Namespace) -> int:
+    config, settings, _ = load_config_for_args(args)
+    server = select_job_server(config, settings, args.server, args.allow_disabled, args.job)
+    errors = validate_server(config, server)
+    if errors:
+        for error in errors:
+            print(f"check failed: {error}", file=sys.stderr)
+        return 2
+    timeout = args.timeout if args.timeout is not None else default_timeout(settings)
+    lines = args.lines if args.lines is not None else default_tail_lines(settings)
+    result = run_ssh(build_ssh_args(config, settings, server, build_tail_log_command(settings, args.job, lines)), timeout)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.returncode != 0:
+        summary = summarize_error(result.stderr)
+        if summary:
+            print(redact_text(config, summary), file=sys.stderr)
         return result.returncode
     return 0
 
@@ -3446,6 +3967,8 @@ def build_parser() -> argparse.ArgumentParser:
         subparser: argparse.ArgumentParser,
         include_server: bool = True,
         include_host_key_policy: bool = False,
+        require_server: bool = True,
+        include_ssh_alias: bool = False,
     ) -> None:
         subparser.add_argument("--settings", type=Path, help="Path to Erie Remote SSH settings JSON.")
         subparser.add_argument("--config", type=Path, help="Path to server_list JSON. Overrides settings.")
@@ -3453,8 +3976,11 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--project", help="Project id for an ephemeral project workdir context.")
         subparser.add_argument("--no-project", action="store_true", help="Disable automatic project config discovery for this command.")
         if include_server:
-            subparser.add_argument("--server", required=True, help="Server id, name, or legacy id.")
+            subparser.add_argument("--server", required=require_server, help="Server id, name, or legacy id.")
             subparser.add_argument("--allow-disabled", action="store_true", help="Allow disabled targets.")
+        if include_ssh_alias:
+            subparser.add_argument("--ssh-alias", help="Temporary Host alias from OpenSSH config; does not read or write the server list.")
+            subparser.add_argument("--ssh-config", type=Path, help="Path to OpenSSH config for --ssh-alias.")
         if include_host_key_policy:
             subparser.add_argument(
                 "--accept-new-host-key",
@@ -3466,6 +3992,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(discover_parser, include_server=False)
     discover_parser.add_argument("--json", action="store_true", help="Print a machine-readable discovery summary.")
     discover_parser.set_defaults(func=cmd_discover)
+
+    ssh_config_parser = subparsers.add_parser("ssh-config-discover", help="List read-only temporary Host aliases from OpenSSH config.")
+    add_common(ssh_config_parser, include_server=False)
+    ssh_config_parser.add_argument("--ssh-config", type=Path, help="Path to OpenSSH config. Defaults to settings ssh.config_path.")
+    ssh_config_parser.add_argument("--json", action="store_true", help="Print a machine-readable SSH config summary.")
+    ssh_config_parser.add_argument("--show-sensitive", action="store_true", help="Show HostName, User, Port, and IdentityFile values.")
+    ssh_config_parser.set_defaults(func=cmd_ssh_config_discover)
 
     choices_parser = subparsers.add_parser("choices", help="Show selectable servers grouped by category and function.")
     add_common(choices_parser, include_server=False)
@@ -3572,6 +4105,7 @@ def build_parser() -> argparse.ArgumentParser:
     request_command_parser = subparsers.add_parser("request-command", help="Create a remote command request.")
     add_common(request_command_parser)
     request_command_parser.add_argument("--reason", required=True, help="Reason for running the remote command.")
+    request_command_parser.add_argument("--detached", action="store_true", help="Create a detached long-running command request.")
     request_command_parser.add_argument("remote_command", nargs=argparse.REMAINDER, help="Remote command after --.")
     request_command_parser.set_defaults(func=cmd_request_command)
 
@@ -3599,15 +4133,36 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.set_defaults(func=cmd_check)
 
     command_parser = subparsers.add_parser("command", help="Print an SSH command without connecting.")
-    add_common(command_parser, include_host_key_policy=True)
+    add_common(command_parser, include_host_key_policy=True, require_server=False, include_ssh_alias=True)
     command_parser.add_argument("--show-sensitive", action="store_true", help="Show a runnable command with full target and key path.")
     command_parser.set_defaults(func=cmd_command)
 
     exec_parser = subparsers.add_parser("exec", help="Run an explicit remote command over SSH.")
-    add_common(exec_parser, include_host_key_policy=True)
+    add_common(exec_parser, include_host_key_policy=True, require_server=False, include_ssh_alias=True)
     exec_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
     exec_parser.add_argument("remote_command", nargs=argparse.REMAINDER, help="Remote command after --.")
     exec_parser.set_defaults(func=cmd_exec)
+
+    exec_detached_parser = subparsers.add_parser("exec-detached", help="Start a long-running remote command and record a resumable job.")
+    add_common(exec_detached_parser)
+    exec_detached_parser.add_argument("--reason", required=True, help="Reason for starting the detached remote command.")
+    exec_detached_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds for the startup handshake. Defaults to settings.")
+    exec_detached_parser.add_argument("remote_command", nargs=argparse.REMAINDER, help="Remote command after --.")
+    exec_detached_parser.set_defaults(func=cmd_exec_detached)
+
+    status_parser = subparsers.add_parser("status", help="Check a detached remote job status.")
+    add_common(status_parser, require_server=False)
+    status_parser.add_argument("--job", required=True, help="Detached job id.")
+    status_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
+    status_parser.add_argument("--json", action="store_true", help="Print a machine-readable job status.")
+    status_parser.set_defaults(func=cmd_status)
+
+    tail_log_parser = subparsers.add_parser("tail-log", help="Tail a detached job stdout log.")
+    add_common(tail_log_parser, require_server=False)
+    tail_log_parser.add_argument("--job", required=True, help="Detached job id.")
+    tail_log_parser.add_argument("--lines", type=positive_int, help="Number of stdout log lines. Defaults to settings.")
+    tail_log_parser.add_argument("--timeout", type=positive_int, help="SSH timeout in seconds. Defaults to settings.")
+    tail_log_parser.set_defaults(func=cmd_tail_log)
 
     scan_software_parser = subparsers.add_parser("scan-software", help="Scan configured software on a remote server and cache the result.")
     add_common(scan_software_parser, include_host_key_policy=True)
@@ -3627,9 +4182,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def unsupported_cmd_message(subcommand: str) -> str:
+    return (
+        f"received unsupported --cmd for {subcommand}. "
+        f"Use: remote_ssh.py {subcommand} ... -- <remote command>"
+    )
+
+
+def precheck_unsupported_cmd(argv: list[str]) -> int | None:
+    for index, token in enumerate(argv):
+        if token not in {"exec", "request-command"}:
+            continue
+        remainder = argv[index + 1 :]
+        before_separator = []
+        for item in remainder:
+            if item == "--":
+                break
+            before_separator.append(item)
+        if "--cmd" in before_separator:
+            print(f"error: {unsupported_cmd_message(token)}", file=sys.stderr)
+            return 2
+        return None
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    precheck = precheck_unsupported_cmd(raw_argv)
+    if precheck is not None:
+        return precheck
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     try:
         return int(args.func(args))
     except RemoteSshError as exc:

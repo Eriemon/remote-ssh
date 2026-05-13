@@ -31,7 +31,6 @@ DEFAULT_TIMEOUT = 20
 DEFAULT_SOFTWARE_KEYS = ["python", "conda", "cuda", "nvidia_driver", "gcc", "gpp", "cmake", "vivado", "vitis"]
 REDACTED = "<redacted>"
 SKILL_DIR = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = SKILL_DIR.parent
 DEFAULT_SETTINGS_PATH = SKILL_DIR / "config" / "defaults.json"
 SAFE_SSH_OPTIONS = [
     "-o",
@@ -58,6 +57,28 @@ PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 class RemoteSshError(Exception):
     """Expected user-facing error."""
+
+
+def detect_project_root(skill_dir: Path) -> Path:
+    """Resolve the default local project root for settings and upload guards.
+
+    In a repository checkout, the skill lives at <repo>/skills/<skill-name>, so
+    `${project_root}` should resolve to the repository root. In an installed or
+    release copy, the skill root itself is the safest default local boundary.
+    """
+
+    resolved = skill_dir.resolve()
+    if len(resolved.parents) < 2:
+        return resolved
+    repo_candidate = resolved.parents[1]
+    source_layout = repo_candidate / "skills" / resolved.name
+    repo_markers = ("AGENTS.md", ".git", "PROJECT_GOALS.md", "TASK_PLAN.md")
+    if source_layout == resolved and any((repo_candidate / marker).exists() for marker in repo_markers):
+        return repo_candidate.resolve()
+    return resolved
+
+
+PROJECT_ROOT = detect_project_root(SKILL_DIR)
 
 
 def load_json_file(path: Path, label: str) -> dict[str, Any]:

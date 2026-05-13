@@ -7,16 +7,14 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 import shutil
-import stat
 import subprocess
 import zipfile
 from pathlib import Path
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
-ROOT = SKILL_DIR.parent
+ROOT = SKILL_DIR.parents[1]
 DIST_ROOT = ROOT / "dist"
 MANIFEST_PATH = DIST_ROOT / "manifest.json"
 ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
@@ -26,8 +24,6 @@ def should_exclude(path: Path, root: Path) -> bool:
     rel = path.relative_to(root)
     parts = [part.casefold() for part in rel.parts]
     name = path.name.casefold()
-    if ".git" in parts:
-        return True
     if "__pycache__" in parts or path.suffix.casefold() == ".pyc":
         return True
     if any(part in {"reports", "requests", "downloads", "logs", "tmp"} for part in parts):
@@ -43,11 +39,6 @@ def should_exclude(path: Path, root: Path) -> bool:
 
 def release_files(root: Path) -> list[Path]:
     return [path for path in sorted(root.rglob("*")) if path.is_file() and not should_exclude(path, root)]
-
-
-def remove_readonly(func, path, _exc_info) -> None:
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
 
 
 def skill_version() -> str:
@@ -70,7 +61,7 @@ def remove_legacy_artifacts() -> None:
     legacy_dir = DIST_ROOT / "erie-remote-ssh"
     legacy_zip = DIST_ROOT / "erie-remote-ssh.zip"
     if legacy_dir.exists():
-        shutil.rmtree(legacy_dir, onerror=remove_readonly)
+        shutil.rmtree(legacy_dir)
     if legacy_zip.exists():
         legacy_zip.unlink()
 
@@ -78,7 +69,7 @@ def remove_legacy_artifacts() -> None:
 def copy_release_tree() -> None:
     dist_skill = dist_skill_path()
     if dist_skill.exists():
-        shutil.rmtree(dist_skill, onerror=remove_readonly)
+        shutil.rmtree(dist_skill)
     dist_skill.parent.mkdir(parents=True, exist_ok=True)
     for source in release_files(SKILL_DIR):
         rel = source.relative_to(SKILL_DIR)
@@ -130,15 +121,15 @@ def file_sha256(path: Path) -> str:
 
 
 def git_output(args: list[str]) -> str:
-    result = subprocess.run(["git", *args], cwd=SKILL_DIR, text=True, capture_output=True, check=False)
+    result = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True, check=False)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def source_state() -> tuple[str, str, bool]:
     branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "unknown"
     commit = git_output(["rev-parse", "HEAD"])
-    dirty = subprocess.run(["git", "diff", "--quiet"], cwd=SKILL_DIR, check=False).returncode != 0
-    dirty = dirty or subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=SKILL_DIR, check=False).returncode != 0
+    dirty = subprocess.run(["git", "diff", "--quiet"], cwd=ROOT, check=False).returncode != 0
+    dirty = dirty or subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ROOT, check=False).returncode != 0
     return branch, ("working-tree" if dirty else commit), dirty
 
 
@@ -160,8 +151,8 @@ def write_manifest() -> None:
         "file_count": len(release_files(dist_skill)),
         "release_created_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "validation_commands": [
-            fr"python .\{artifact_name}\scripts\validate_remote_ssh.py",
-            fr"python C:\Users\17677\.codex\skills\.system\skill-creator\scripts\quick_validate.py .\{artifact_name}",
+            r"python .\skills\erie-remote-ssh\scripts\validate_remote_ssh.py",
+            r"python <skill-creator-quick-validate.py> .\skills\erie-remote-ssh",
         ],
         "excludes": [
             "config/server_list.local.json",
@@ -172,7 +163,6 @@ def write_manifest() -> None:
             "downloads/",
             "logs/",
             "tmp/",
-            ".git/",
             "__pycache__/",
             "*.pyc",
         ],

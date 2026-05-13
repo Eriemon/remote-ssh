@@ -299,7 +299,7 @@ python <skill-dir>\scripts\remote_ssh.py file-download --settings <settings> --s
 
 Remote paths must be relative to `workdir`. Absolute paths, drive paths, backslashes, empty paths, and `..` are rejected. Downloads write only inside `paths.downloads_dir`, which defaults to `${skill_dir}/reports/downloads`.
 
-Upload sources must stay inside configured `paths.upload_roots`, which defaults to `${project_root}`. To upload from the current workspace or a data directory outside the skill project, use a custom settings file with explicit roots, for example `"upload_roots": ["${cwd}", "F:/work/data"]`. Do not use a filesystem root or the whole user home directory as an upload root.
+Upload sources must stay inside configured `paths.upload_roots`, which defaults to `${project_root}`. In a source checkout that resolves to the repository root; in an installed or release copy it resolves to the skill root. To upload from the current workspace or a data directory outside the skill project, use a custom settings file with explicit roots, for example `"upload_roots": ["${cwd}", "F:/work/data"]`. Do not use a filesystem root or the whole user home directory as an upload root.
 
 Write operations create request files first:
 

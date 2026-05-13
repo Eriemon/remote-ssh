@@ -93,7 +93,7 @@ If the requested server target, write action, host-key change, or other sensitiv
 
 Built-in file operations accept remote paths relative to `workdir` only. They reject absolute paths, drive paths, and parent traversal. Write, delete, upload, mkdir, and arbitrary command operations require request files and `run-request --execute`.
 
-Uploads also validate the local source. `request-upload --local` must resolve inside configured `paths.upload_roots`, which defaults to `${project_root}`. Use a custom settings file with explicit upload roots, such as a current workspace or data directory, before uploading files outside the skill project. Sensitive local sources such as `.codex`, `.ssh`, private keys, `.env`, `known_hosts`, `authorized_keys`, and system directories require `--confirm-sensitive-local-upload` on both `request-upload` and `run-request --execute`, plus a clear `--reason`.
+Uploads also validate the local source. `request-upload --local` must resolve inside configured `paths.upload_roots`, which defaults to `${project_root}`. In a source checkout, `${project_root}` resolves to the repository root; in an installed or release copy, it resolves to the skill root so the default upload boundary does not widen to the whole Codex home. Use a custom settings file with explicit upload roots, such as a current workspace or data directory, before uploading files outside the skill project. Sensitive local sources such as `.codex`, `.ssh`, private keys, `.env`, `known_hosts`, `authorized_keys`, and system directories require `--confirm-sensitive-local-upload` on both `request-upload` and `run-request --execute`, plus a clear `--reason`.
 
 ## Configuration Discovery
 

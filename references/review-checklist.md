@@ -85,6 +85,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Remote file paths reject empty paths, absolute paths, drive paths, backslashes, and parent traversal.
 - Built-in write/delete/upload operations resolve remote targets under `workdir` again at execution time.
 - Upload local source paths resolve under configured `paths.upload_roots`; request execution revalidates the recorded upload root and relative path.
+- The default `${project_root}` boundary resolves to the repository root in a source checkout and to the skill root in installed or release copies.
 - Sensitive local upload sources require `--confirm-sensitive-local-upload` and a non-empty reason at request creation and execution.
 
 ## Execution

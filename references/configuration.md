@@ -36,7 +36,7 @@ Settings paths support:
 - Relative paths resolved from the settings file directory.
 - Environment variables supported by the operating system.
 - `~` home directory expansion.
-- `${project_root}` for the repository root.
+- `${project_root}` for the current skill project root. In a source checkout it resolves to the repository root; in an installed or release copy it resolves to the skill root.
 - `${skill_dir}` for the `erie-remote-ssh` skill directory.
 - `${settings_dir}` for the settings file directory.
 - `${home}` for the current user's home directory.
@@ -52,7 +52,7 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `paths.validation_tmp_dir`: Temporary root directory used by validation. The bundled default is `${skill_dir}/reports/tmp/validation`; each run creates and removes its own child directory.
 - `paths.requests_dir`: Directory for generated request JSON files. The bundled default is `${skill_dir}/reports/requests`; keep it git-ignored.
 - `paths.downloads_dir`: Directory for `file-download` targets. The bundled default is `${skill_dir}/reports/downloads`; local download paths must stay inside this directory.
-- `paths.upload_roots`: Non-empty list of local directories allowed as `request-upload --local` sources. Defaults to `${project_root}`. Use explicit workspace or data directories for uploads outside the skill project; do not configure a filesystem root or the whole user home directory.
+- `paths.upload_roots`: Non-empty list of local directories allowed as `request-upload --local` sources. Defaults to `${project_root}`. In a source checkout that means the repository root; in an installed or release copy it means the skill root. Use explicit workspace or data directories for uploads outside the skill project; do not configure a filesystem root or the whole user home directory.
 - `tools.ssh_client`: SSH executable name or path.
 - `tools.scp_client`: SCP executable name or path.
 - `tools.ssh_keygen`: SSH key generator executable name or path. Defaults to `ssh-keygen`; validation may replace it with a fake helper.

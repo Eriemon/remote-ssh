@@ -159,17 +159,24 @@ python .\scripts\validate_remote_ssh.py
 python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server-list.json>
 ```
 
+## 机构说明
+
+Jiyuan Liu 和 He Li 隶属于东南大学电子科学与工程学院。
+两位作者所在团队为东南大学电子科学与工程学院异构智能与量子计算实验室（HIQC课题组），相关工作面向异构智能、量子计算及相关计算系统研究。
+
 ## 联系方式
 
 开发者：Jiyuan Liu。问题、合作或学术使用，请联系：[erie@seu.edu.cn](mailto:erie@seu.edu.cn)。
 
 ## 引用
 
+本 skill 由东南大学电子科学与工程学院异构智能与量子计算实验室（HIQC课题组）相关作者维护。
+
 如果本 skill 对你的研究、教学或工程流程有帮助，请引用。规范引用元数据以 [CITATION.cff](CITATION.cff) 为准。
 
 ```bibtex
 @software{liu_2026_remote_ssh,
-  author       = {Jiyuan Liu},
+  author       = {Jiyuan Liu and He Li},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
   version      = {0.1.7},

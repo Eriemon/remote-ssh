@@ -6,6 +6,10 @@ authors:
   - family-names: "Liu"
     given-names: "Jiyuan"
     email: "erie@seu.edu.cn"
+    affiliation: "Southeast University"
+  - family-names: "Li"
+    given-names: "He"
+    affiliation: "Southeast University"
 abstract: "remote-ssh is a Codex-ready agent skill package for conservative SSH-based development and test workflows, including redacted target discovery, key and workspace checks, reviewed request files, bounded file operations, and validation evidence."
 keywords:
   - agent skill

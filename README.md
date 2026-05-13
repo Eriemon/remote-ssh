@@ -179,17 +179,24 @@ Real SSH tests are opt-in and require an explicit private server list:
 python .\scripts\validate_remote_ssh.py --with-ssh --server-list <private-server-list.json>
 ```
 
+## Affiliation
+
+Jiyuan Liu and He Li are with the School of Electronic Science and Engineering, Southeast University.
+They are affiliated with the Heterogeneous Intelligence and Quantum Computing Laboratory (HIQC), which works on heterogeneous intelligence, quantum computing, and related computing systems research.
+
 ## Contact
 
 Developer: Jiyuan Liu. For questions, collaboration, or academic use, contact: [erie@seu.edu.cn](mailto:erie@seu.edu.cn).
 
 ## Citation
 
+This skill is maintained by authors from the Heterogeneous Intelligence and Quantum Computing Laboratory, School of Electronic Science and Engineering, Southeast University.
+
 If this skill helps your research, teaching, or engineering workflow, please cite it. The canonical citation metadata is maintained in [CITATION.cff](CITATION.cff).
 
 ```bibtex
 @software{liu_2026_remote_ssh,
-  author       = {Jiyuan Liu},
+  author       = {Jiyuan Liu and He Li},
   title        = {{remote-ssh}: An Agent Skill for Conservative SSH Workflows},
   year         = {2026},
   version      = {0.1.7},

@@ -5,6 +5,7 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 ## Contents
 
 - Progressive Loading
+- Integration Contract
 - Discover Configuration
 - Use SSH Config Alias Fallback
 - Choose Configuration Mode
@@ -27,7 +28,22 @@ Use these workflows after the `erie-remote-ssh` skill triggers. Prefer the helpe
 
 - Read `server-list-schema.md` when schema fields, compatibility, or validation failures matter.
 - Read `configuration.md` when settings, paths, validation targets, or tool locations matter.
+- Read `integration-contract.md` when another skill needs stable blocked reasons, selection gates, or output fields from this helper.
+- Read `regression-scenarios.md` before changing output fields, installer behavior, governance freshness checks, or detached-job flow.
 - Read `review-checklist.md` before declaring confidence, reviewing a change, or reporting that validation is complete.
+
+## Integration Contract
+
+When another skill depends on `erie-remote-ssh`, keep the lifecycle stable:
+
+1. `discover`
+2. `choices`
+3. `check`
+4. `workspace-check`
+5. `request-*` / `exec` / `exec-detached`
+6. `run-request` / `status` / `tail-log`
+
+If the dependency is missing or no usable server list exists, stop early with a blocked reason and a concrete `next_action` instead of guessing SSH paths or inventing fallback shell commands.
 - Keep `SKILL.md` as the checklist entrypoint; load this file only for detailed operation steps.
 
 ## Discover Configuration
@@ -81,6 +97,8 @@ The installer backs up the current installed skill to `${CODEX_HOME:-~/.codex}/s
 `reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests`, downloads to `${skill_dir}/reports/downloads`, detached job manifests to `${skill_dir}/reports/jobs`, and validation temp runs to `${skill_dir}/reports/tmp/validation`; custom settings may override these paths.
 
 Do not treat root-level `out`, `remote-validation-bundles`, `requests`, `downloads`, or `tmp` directories next to `erie-remote-ssh` as normal output from this skill. `out` and `remote-validation-bundles` usually come from other skills or explicitly supplied output paths; root-level `requests`, `downloads`, and `tmp` may be historical artifacts from older defaults. The only root-level artifact directory this skill intentionally creates is `dist/` during release builds.
+
+Release artifact naming is canonical only in the form `dist/erie-remote-ssh-vX.Y.Z` plus `dist/erie-remote-ssh-vX.Y.Z.zip`. Older different versions remain in `dist/`. Republishing the same version may overwrite only that exact same-version directory, zip, and manifest. Noncanonical aliases without the `v` prefix are treated as legacy mistakes and should not be kept.
 
 ## Choose Configuration Mode
 

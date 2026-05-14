@@ -137,4 +137,6 @@ Use `software --server <id-or-name>` or `software --server <id-or-name> --name <
 - Read `references/server-list-schema.md` when validating or extending the JSON format.
 - Read `references/configuration.md` when changing settings, paths, request/download directories, validation targets, or tool locations.
 - Read `references/workflows.md` for discovery, configuration, file operations, request review, execution, inventory, and troubleshooting details.
+- Read `references/integration-contract.md` when another skill or workflow wants to depend on `erie-remote-ssh` programmatically.
+- Read `references/regression-scenarios.md` when changing output contracts, install behavior, governance freshness, or detached job flow.
 - Read `references/review-checklist.md` before claiming the skill or a remote operation is fully validated.

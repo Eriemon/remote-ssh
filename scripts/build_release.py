@@ -7,6 +7,8 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -18,6 +20,7 @@ ROOT = SKILL_DIR.parents[1]
 DIST_ROOT = ROOT / "dist"
 MANIFEST_PATH = DIST_ROOT / "manifest.json"
 ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 def should_exclude(path: Path, root: Path) -> bool:
@@ -57,13 +60,45 @@ def zip_path() -> Path:
     return DIST_ROOT / f"{artifact_base_name()}.zip"
 
 
+def noncanonical_release_aliases() -> list[Path]:
+    aliases: list[Path] = []
+    pattern = re.compile(r"^erie-remote-ssh-(\d+)\.(\d+)\.(\d+)(?:\.zip)?$")
+    for path in DIST_ROOT.iterdir() if DIST_ROOT.exists() else []:
+        if not pattern.fullmatch(path.name):
+            continue
+        aliases.append(path)
+    return sorted(aliases)
+
+
+def is_windows_reparse_point(path: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(path.lstat().st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+    except (AttributeError, OSError):
+        return False
+
+
+def remove_release_path(path: Path) -> None:
+    if path.is_dir():
+        if path.is_symlink() or is_windows_reparse_point(path):
+            subprocess.run(["cmd", "/c", "rmdir", str(path)], check=True, capture_output=True, text=True)
+        else:
+            shutil.rmtree(path)
+        return
+    if path.exists():
+        path.unlink()
+
+
 def remove_legacy_artifacts() -> None:
     legacy_dir = DIST_ROOT / "erie-remote-ssh"
     legacy_zip = DIST_ROOT / "erie-remote-ssh.zip"
     if legacy_dir.exists():
-        shutil.rmtree(legacy_dir)
+        remove_release_path(legacy_dir)
     if legacy_zip.exists():
         legacy_zip.unlink()
+    for alias in noncanonical_release_aliases():
+        remove_release_path(alias)
 
 
 def copy_release_tree() -> None:

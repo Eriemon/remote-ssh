@@ -124,6 +124,82 @@ def write_json(path: Path, data: object) -> Path:
     return path
 
 
+def init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-b", "master"], cwd=path, text=True, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Validation Bot"], cwd=path, text=True, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "validation@example.invalid"], cwd=path, text=True, capture_output=True, check=True)
+
+
+def commit_all(path: Path, message: str) -> None:
+    subprocess.run(["git", "add", "."], cwd=path, text=True, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=path, text=True, capture_output=True, check=True)
+
+
+def init_release_fixture_project(project_root: Path, version: str = "0.1.9") -> Path:
+    skill_root = project_root / "skills" / "erie-remote-ssh"
+    (skill_root / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_root / "config").mkdir(parents=True, exist_ok=True)
+    (skill_root / "references").mkdir(parents=True, exist_ok=True)
+    (skill_root / "agents").mkdir(parents=True, exist_ok=True)
+    (project_root / "dist").mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text("---\nname: erie-remote-ssh\ndescription: validation fixture\n---\nfixture\n", encoding="utf-8")
+    (skill_root / "VERSION").write_text(version + "\n", encoding="utf-8")
+    (skill_root / "agents" / "openai.yaml").write_text("display_name: fixture\n", encoding="utf-8")
+    (skill_root / "config" / "defaults.json").write_text('{"version": 1}\n', encoding="utf-8")
+    (skill_root / "references" / "configuration.md").write_text("configuration\n", encoding="utf-8")
+    (skill_root / "references" / "workflows.md").write_text("workflows\n", encoding="utf-8")
+    (skill_root / "references" / "review-checklist.md").write_text("review\n", encoding="utf-8")
+    (skill_root / "scripts" / "build_release.py").write_bytes((SKILL_DIR / "scripts" / "build_release.py").read_bytes())
+    return skill_root
+
+
+def run_fixture_build_release(project_root: Path, skill_root: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, str(skill_root / "scripts" / "build_release.py")],
+        cwd=project_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValidationError(
+            f"fixture build_release.py failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
+def run_fixture_release_gate(
+    project_root: Path,
+    version: str,
+    *,
+    phase: str,
+    install_intent: str = "requested",
+) -> dict[str, Any]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(resolve_agents_generator_script("manage_docs.py")),
+            "release-gate",
+            str(project_root),
+            "--version",
+            version,
+            "--skill-dir",
+            "skills/erie-remote-ssh",
+            "--phase",
+            phase,
+            "--install-intent",
+            install_intent,
+        ],
+        cwd=project_root,
+        env={**os.environ, "CODEX_HOME": str((Path.home() / ".codex").resolve())},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValidationError(f"fixture release-gate failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return json.loads(result.stdout)
+
+
 def fake_scan_output() -> str:
     return "\n".join(
         [
@@ -522,6 +598,90 @@ def validation_name(settings: dict[str, Any], key: str, fallback: str | None = N
     return str(value)
 
 
+def codex_skills_root() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    return codex_home / "skills"
+
+
+def resolve_agents_generator_script(name: str) -> Path:
+    home_codex = Path.home() / ".codex" / "skills"
+    candidates = [
+        codex_skills_root() / "agents-md-generator" / "scripts" / name,
+        codex_skills_root() / ".system" / "agents-md-generator" / "scripts" / name,
+        home_codex / "agents-md-generator" / "scripts" / name,
+        home_codex / ".system" / "agents-md-generator" / "scripts" / name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    raise ValidationError(f"agents-md-generator script not found: {name} (checked: {candidates})")
+
+
+def run_agents_generator_tool(
+    script_name: str,
+    args: list[str],
+    *,
+    expected: int | set[int] = 0,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    expected_set = {expected} if isinstance(expected, int) else expected
+    script_path = resolve_agents_generator_script(script_name)
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str((Path.home() / ".codex").resolve())
+    result = subprocess.run(
+        [sys.executable, str(script_path), *args],
+        cwd=cwd or ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode not in expected_set:
+        raise ValidationError(
+            f"agents-md-generator command failed: {script_name} {' '.join(args)}\n"
+            f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result
+
+
+def require_output_field(output: str, field: str, label: str) -> None:
+    assert_contains(output, f"{field}:", label)
+
+
+def governance_alignment_tests() -> None:
+    if not (ROOT / "AGENTS.md").exists():
+        return
+    inspect = run_agents_generator_tool("inspect_project.py", ["."], cwd=ROOT)
+    inspect_data = json.loads(inspect.stdout)
+    if inspect_data.get("root_agents_md_trigger_required"):
+        raise ValidationError(f"root AGENTS.md should not remain trigger-required:\n{inspect.stdout}")
+    if inspect_data.get("root_agents_md_rebuild_required"):
+        raise ValidationError(f"root AGENTS.md should not remain rebuild-required:\n{inspect.stdout}")
+
+    state_path = ROOT / ".agents" / "docs-governance-state.json"
+    state = load_ref(state_path)
+    handoff_count = int(state.get("handoff_count", 0))
+    reviewed_handoff = int(state.get("last_workspace_session_reviewed_handoff", 0))
+    reviewed_count = int(state.get("last_workspace_session_count", 0))
+    reviewed_at = str(state.get("last_workspace_session_sync_at", "")).strip()
+    if reviewed_handoff != handoff_count:
+        raise ValidationError(
+            "docs governance state must record the exact handoff count used for the latest workspace-session freshness review"
+        )
+    if reviewed_count != int(inspect_data.get("matched_session_count", -1)):
+        raise ValidationError("docs governance state last_workspace_session_count must match inspect_project matched_session_count")
+    if not reviewed_at:
+        raise ValidationError("docs governance state must record last_workspace_session_sync_at")
+
+    required_docs = [
+        SKILL_DIR / "references" / "integration-contract.md",
+        SKILL_DIR / "references" / "regression-scenarios.md",
+    ]
+    for path in required_docs:
+        if not path.exists():
+            raise ValidationError(f"missing required reference document: {path.relative_to(SKILL_DIR).as_posix()}")
+
+
 def positive_tests(settings: dict[str, Any], settings_path: Path, server_list: Path, ref_config: dict) -> None:
     base = tool_base_args(settings_path, server_list)
     positive_server = validation_name(settings, "positive_server", clone_first_server(ref_config)["id"])
@@ -529,12 +689,17 @@ def positive_tests(settings: dict[str, Any], settings_path: Path, server_list: P
 
     discover_result = run_tool(["discover", *base])
     assert_contains(discover_result.stdout, "status: available", "discover output")
+    require_output_field(discover_result.stdout, "message", "discover output")
+    require_output_field(discover_result.stdout, "next_action", "discover output")
     assert_redacted(discover_result.stdout, ref_config, "discover output")
 
     discover_json_result = run_tool(["discover", *base, "--json"])
     discover_data = json.loads(discover_json_result.stdout)
     if discover_data.get("status") != "available" or discover_data.get("enabled_ssh_count", 0) < 1:
         raise ValidationError(f"unexpected discover json output: {discover_json_result.stdout}")
+    for field in ["message", "next_action"]:
+        if field not in discover_data:
+            raise ValidationError(f"discover json missing {field}: {discover_json_result.stdout}")
     if discover_data.get("server_list_path") != "<redacted>":
         raise ValidationError(f"discover json should redact server_list_path by default: {discover_json_result.stdout}")
     assert_not_contains(discover_json_result.stdout, str(server_list), "discover json output")
@@ -551,6 +716,8 @@ def positive_tests(settings: dict[str, Any], settings_path: Path, server_list: P
     check_result = run_tool(["check", *base, "--server", positive_server])
     assert_contains(check_result.stdout, "status: ok", "check output")
     assert_contains(check_result.stdout, "key_path: <redacted>", "check output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(check_result.stdout, field, "check output")
     assert_redacted(check_result.stdout, ref_config, "check output")
 
     command_result = run_tool(["command", *base, "--server", positive_server])
@@ -564,6 +731,8 @@ def positive_tests(settings: dict[str, Any], settings_path: Path, server_list: P
 
     warning_result = run_tool(["check", *base, "--server", warning_server])
     assert_contains(warning_result.stdout, "warning:", "warning output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(warning_result.stdout, field, "warning output")
     assert_redacted(warning_result.stdout, ref_config, "warning output")
 
     software_result = run_tool(["software", *base, "--server", positive_server])
@@ -881,6 +1050,8 @@ def workspace_check_writeback_tests(settings: dict[str, Any], tmp_dir: Path) -> 
     result = run_tool(["workspace-check", "--settings", str(temp_settings), "--server", server_id])
     assert_contains(result.stdout, "status: ok", "workspace-check writeback output")
     assert_contains(result.stdout, "backup:", "workspace-check writeback output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(result.stdout, field, "workspace-check writeback output")
     if not list(server_list.parent.glob(f"{server_list.name}.bak.*")):
         raise ValidationError("workspace-check did not create a backup before write-back")
 
@@ -1576,6 +1747,8 @@ def cmd_guidance_tests(settings: dict[str, Any], settings_path: Path, server_lis
     assert_contains(request_result.stderr, "Use: remote_ssh.py request-command ... -- <remote command>", "request-command --cmd guidance")
 
     literal_cmd = run_tool(["request-command", *base, "--server", server_id, "--reason", "literal flag", "--", "--cmd", "echo"])
+    for field in ["status", "server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(literal_cmd.stdout, field, "request-command output")
     request = request_from_output(literal_cmd.stdout)
     if request.get("payload", {}).get("command") != "--cmd echo":
         raise ValidationError(f"--cmd after -- should remain part of the remote command: {request}")
@@ -1618,6 +1791,8 @@ def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     start_result = run_tool(["exec-detached", "--settings", str(temp_settings), "--server", server_id, "--reason", "long validation", "--", "sleep", "30"])
     assert_contains(start_result.stdout, "status: started", "exec-detached output")
     assert_contains(start_result.stdout, "job_id: job-abc", "exec-detached output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(start_result.stdout, field, "exec-detached output")
     manifest = jobs_root / "job-abc.json"
     if not manifest.exists():
         raise ValidationError("exec-detached did not write a local job manifest")
@@ -1627,6 +1802,8 @@ def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
 
     status_result = run_tool(["status", "--settings", str(temp_settings), "--job", "job-abc"])
     assert_contains(status_result.stdout, "status: running", "job status output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(status_result.stdout, field, "job status output")
 
     tail_result = run_tool(["tail-log", "--settings", str(temp_settings), "--job", "job-abc"])
     assert_contains(tail_result.stdout, "line two", "tail-log output")
@@ -1641,6 +1818,8 @@ def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     run_result = run_tool(["run-request", "--settings", str(temp_settings), "--request", str(requests_root / f"{detached_request['request_id']}.json"), "--execute"])
     assert_contains(run_result.stdout, "status: started", "detached run-request output")
     assert_contains(run_result.stdout, "job_id: job-def", "detached run-request output")
+    for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
+        require_output_field(run_result.stdout, field, "detached run-request output")
 
     succeeded = run_tool(["status", "--settings", str(temp_settings), "--server", server_id, "--job", "job-def"])
     assert_contains(succeeded.stdout, "status: succeeded", "succeeded job status output")
@@ -2960,8 +3139,18 @@ def release_artifact_naming_audit(version: str) -> None:
     expected_zip = dist_root / f"{expected_base}.zip"
     legacy_dir = dist_root / "erie-remote-ssh"
     legacy_zip = dist_root / "erie-remote-ssh.zip"
+    noncanonical = sorted(
+        path.name
+        for path in dist_root.iterdir()
+        if re.fullmatch(r"erie-remote-ssh-\d+\.\d+\.\d+(?:\.zip)?", path.name)
+    )
     if legacy_dir.exists() or legacy_zip.exists():
         raise ValidationError("release artifacts must be versioned as erie-remote-ssh-vx.x.x, not unversioned")
+    if noncanonical:
+        raise ValidationError(
+            "release artifacts must use canonical v-prefixed names only; found noncanonical aliases: "
+            + ", ".join(noncanonical)
+        )
     if (dist_root / "manifest.json").exists() and (not expected_dir.exists() or not expected_zip.exists()):
         raise ValidationError(f"release artifacts must include {expected_dir.name}/ and {expected_zip.name}")
     manifest_path = dist_root / "manifest.json"
@@ -2973,12 +3162,87 @@ def release_artifact_naming_audit(version: str) -> None:
             raise ValidationError(f"release manifest zip_artifact must be {expected_zip.name}")
 
 
+def release_retention_policy_tests(tmp_dir: Path) -> None:
+    project_root = tmp_dir / "release-retention"
+    skill_root = init_release_fixture_project(project_root, version="0.1.9")
+    init_git_repo(project_root)
+    commit_all(project_root, "init fixture")
+
+    dist_root = project_root / "dist"
+    old_dir = dist_root / "erie-remote-ssh-v0.1.8"
+    old_zip = dist_root / "erie-remote-ssh-v0.1.8.zip"
+    current_dir = dist_root / "erie-remote-ssh-v0.1.9"
+    current_zip = dist_root / "erie-remote-ssh-v0.1.9.zip"
+    legacy_dir = dist_root / "erie-remote-ssh-0.1.9"
+    legacy_zip = dist_root / "erie-remote-ssh-0.1.9.zip"
+
+    (old_dir / "nested").mkdir(parents=True, exist_ok=True)
+    (old_dir / "nested" / "sentinel.txt").write_text("keep old version\n", encoding="utf-8")
+    old_zip.write_bytes(b"old-version-zip")
+
+    current_dir.mkdir(parents=True, exist_ok=True)
+    (current_dir / "stale.txt").write_text("overwrite me\n", encoding="utf-8")
+    current_zip.write_bytes(b"stale-current-zip")
+
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_dir / "legacy.txt").write_text("legacy alias\n", encoding="utf-8")
+    legacy_zip.write_bytes(b"legacy-zip")
+
+    run_fixture_build_release(project_root, skill_root)
+
+    if not (old_dir / "nested" / "sentinel.txt").exists():
+        raise ValidationError("build_release.py must preserve older versioned release directories in dist/")
+    if old_zip.read_bytes() != b"old-version-zip":
+        raise ValidationError("build_release.py must preserve older versioned release zip files in dist/")
+    if (current_dir / "stale.txt").exists():
+        raise ValidationError("build_release.py must overwrite the current same-version release directory on republish")
+    if current_zip.read_bytes() == b"stale-current-zip":
+        raise ValidationError("build_release.py must overwrite the current same-version release zip on republish")
+    if legacy_dir.exists() or legacy_zip.exists():
+        raise ValidationError("build_release.py must remove noncanonical non-v release aliases")
+
+
+def release_gate_versioned_naming_tests(tmp_dir: Path) -> None:
+    project_root = tmp_dir / "release-gate-versioned"
+    skill_root = init_release_fixture_project(project_root, version="0.1.9")
+    init_git_repo(project_root)
+    commit_all(project_root, "init fixture")
+    subprocess.run(["git", "branch", "release"], cwd=project_root, text=True, capture_output=True, check=True)
+
+    pre_result = run_fixture_release_gate(project_root, "v0.1.9", phase="pre")
+    if not pre_result.get("ok"):
+        raise ValidationError(f"release-gate pre should accept canonical v-prefixed version names: {pre_result}")
+    if pre_result.get("checks", {}).get("expected_release_dir") != "dist/erie-remote-ssh-v0.1.9":
+        raise ValidationError(f"release-gate pre expected release dir should use v-prefix naming: {pre_result}")
+
+    run_fixture_build_release(project_root, skill_root)
+    commit_all(project_root, "publish fixture release")
+
+    post_result = run_fixture_release_gate(project_root, "v0.1.9", phase="post")
+    if not post_result.get("ok"):
+        raise ValidationError(f"release-gate post should pass with canonical v-prefixed artifacts only: {post_result}")
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def current_git_branch() -> str:
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    branch = result.stdout.strip()
+    if result.returncode != 0 or not branch:
+        raise ValidationError(f"failed to resolve current git branch\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return branch
 
 
 def release_file_count(path: Path) -> int:
@@ -3247,8 +3511,9 @@ def release_manifest_audit(version: str) -> None:
         raise ValidationError("release manifest name must be erie-remote-ssh")
     if manifest.get("version") != version:
         raise ValidationError(f"release manifest version must match VERSION {version}")
-    if manifest.get("source_branch") != "master":
-        raise ValidationError("release manifest source_branch must be master")
+    expected_source_branch = current_git_branch()
+    if manifest.get("source_branch") != expected_source_branch:
+        raise ValidationError(f"release manifest source_branch must be {expected_source_branch}")
     if manifest.get("release_branch") != "release":
         raise ValidationError("release manifest release_branch must be release")
     expected_base = release_artifact_base_name(version)
@@ -3448,6 +3713,7 @@ def main() -> int:
         release_manifest_audit(version)
         skill_frontmatter_audit()
         skill_identity_audit()
+        governance_alignment_tests()
         extraneous_docs_audit()
         references_linked_audit()
         software_catalog_documentation_audit()
@@ -3465,6 +3731,8 @@ def main() -> int:
         negative_tests(settings_path, server_list, ref_config, tmp_dir)
         subprocess_decoding_tests(tmp_dir)
         backup_collision_tests(tmp_dir)
+        release_retention_policy_tests(tmp_dir)
+        release_gate_versioned_naming_tests(tmp_dir)
         software_scan_tests(settings, tmp_dir)
         workspace_check_writeback_tests(settings, tmp_dir)
         project_workdir_tests(settings, tmp_dir)

@@ -418,6 +418,13 @@ class Server:
         return str(workspace.get("status", "unknown"))
 
     @property
+    def software_cache_status(self) -> str:
+        snapshot = self.raw.get("software_scan") or {}
+        if not isinstance(snapshot, dict):
+            return "missing"
+        return str(snapshot.get("status", "missing"))
+
+    @property
     def validation_error(self) -> str:
         validation = self.raw.get("validation") or {}
         if not isinstance(validation, dict):
@@ -651,6 +658,32 @@ def print_project_context(project: ProjectContext | None) -> None:
         return
     print(f"project: {project.project_id}")
     print("workdir_source: project")
+
+
+def print_contract_fields(
+    server: Server | None,
+    *,
+    status: str,
+    message: str,
+    next_action: str,
+    workdir_status: str | None = None,
+    software_cache_status: str | None = None,
+) -> None:
+    print(f"status: {status}")
+    if server is None:
+        print("server_id: not_applicable")
+        print("server_name: not_applicable")
+        resolved_workdir_status = workdir_status or "not_applicable"
+        resolved_software_status = software_cache_status or "not_applicable"
+    else:
+        print(f"server_id: {server.id}")
+        print(f"server_name: {server.name}")
+        resolved_workdir_status = workdir_status or server.workspace_status
+        resolved_software_status = software_cache_status or server.software_cache_status
+    print(f"workdir_status: {resolved_workdir_status}")
+    print(f"software_cache_status: {resolved_software_status}")
+    print(f"message: {message}")
+    print(f"next_action: {next_action}")
 
 
 def project_output_record(project: ProjectContext | None) -> dict[str, Any]:
@@ -1463,7 +1496,14 @@ def load_request(path: Path) -> dict[str, Any]:
     return request
 
 
-def print_request_created(path: Path, request: dict[str, Any]) -> None:
+def print_request_created(path: Path, request: dict[str, Any], server: Server, project: ProjectContext | None = None) -> None:
+    print_contract_fields(
+        server,
+        status="pending",
+        message=f"Created a reviewed {request['operation']} request.",
+        next_action="Review the request, then run run-request --request <request.json> --execute when you are ready.",
+        workdir_status="project_pending" if project is not None else server.workspace_status,
+    )
     print(f"request: {path}")
     print(f"operation: {request['operation']}")
     print(f"server: {request['server']}")
@@ -1650,6 +1690,8 @@ def discover_summary(settings: dict[str, Any], config_path: Path) -> tuple[dict[
                 "ssh_config_fallback_available": bool(aliases),
                 "ssh_config_alias_count": len(aliases),
                 "ssh_config_aliases": [{"alias": record.alias} for record in aliases],
+                "message": "No configured SSH server list is available yet.",
+                "next_action": next_steps[0],
                 "next_steps": next_steps,
             },
             3,
@@ -1666,6 +1708,7 @@ def discover_summary(settings: dict[str, Any], config_path: Path) -> tuple[dict[
         status = "available"
         exit_code = 0
         next_steps = ["Run list, check, command, exec, or inventory for a selected server."]
+    message = "Configured SSH targets are available." if enabled_servers else "A server list exists, but no enabled SSH targets are configured."
 
     return (
         {
@@ -1675,6 +1718,8 @@ def discover_summary(settings: dict[str, Any], config_path: Path) -> tuple[dict[
             "server_count": len(servers),
             "enabled_ssh_count": len(enabled_servers),
             "enabled_ssh_servers": [{"id": server.id, "name": server.name} for server in enabled_servers],
+            "message": message,
+            "next_action": next_steps[0],
             "next_steps": next_steps,
         },
         exit_code,
@@ -1689,7 +1734,12 @@ def cmd_discover(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return exit_code
 
-    print(f"status: {summary['status']}")
+    print_contract_fields(
+        None,
+        status=str(summary["status"]),
+        message=str(summary["message"]),
+        next_action=str(summary["next_action"]),
+    )
     print(f"server_list_exists: {summary['server_list_exists']}")
     print(f"server_count: {summary['server_count']}")
     print(f"enabled_ssh_count: {summary['enabled_ssh_count']}")
@@ -2927,9 +2977,19 @@ def cmd_workspace_check(args: argparse.Namespace) -> int:
             update_server_status_cache(config_path, config, server, validation, workspace_check)
         else:
             update_project_workspace_cache(settings, project, server, workspace_check)
-        print("status: failed")
-        if project is not None:
-            print("next: create the project remote workdir manually or with a reviewed request before retrying workspace-check.")
+        next_action = (
+            "Create the project remote workdir manually or with a reviewed request before retrying workspace-check."
+            if project is not None
+            else "Repair SSH authentication or the remote workdir, then retry workspace-check."
+        )
+        print_contract_fields(
+            server,
+            status="failed",
+            message=message,
+            next_action=next_action,
+            workdir_status="failed",
+            software_cache_status=server.software_cache_status,
+        )
         print_key_only_repair_guidance(summary or "")
         if backup:
             print(f"backup: {backup}")
@@ -2956,7 +3016,14 @@ def cmd_workspace_check(args: argparse.Namespace) -> int:
                 write_json_atomic(config_path, config)
                 break
         update_project_workspace_cache(settings, project, server, workspace_check)
-    print("status: ok")
+    print_contract_fields(
+        server,
+        status="ok",
+        message=workspace_check["message"],
+        next_action="Use file-list, request-command, exec, inventory, or project-init dependent workflows as needed.",
+        workdir_status="ok",
+        software_cache_status="refresh_pending",
+    )
     if backup:
         print(f"backup: {backup}")
 
@@ -3051,7 +3118,7 @@ def cmd_request_upload(args: argparse.Namespace) -> int:
         risk_summary=risks,
         project=project,
     )
-    print_request_created(path, load_request(path))
+    print_request_created(path, load_request(path), server, project)
     return 0
 
 
@@ -3059,7 +3126,7 @@ def cmd_request_mkdir(args: argparse.Namespace) -> int:
     _, settings, server, project = prepare_server_for_remote_with_project(args)
     remote_path = remote_relative_path(args.path, allow_dot=False)
     path = create_request(settings, "mkdir", server, {"remote_path": remote_path}, reason=args.reason or "", project=project)
-    print_request_created(path, load_request(path))
+    print_request_created(path, load_request(path), server, project)
     return 0
 
 
@@ -3074,7 +3141,7 @@ def cmd_request_delete(args: argparse.Namespace) -> int:
         reason=args.reason or "",
         project=project,
     )
-    print_request_created(path, load_request(path))
+    print_request_created(path, load_request(path), server, project)
     return 0
 
 
@@ -3085,7 +3152,7 @@ def cmd_request_command(args: argparse.Namespace) -> int:
     if args.detached:
         payload["detached"] = True
     path = create_request(settings, "command", server, payload, reason=args.reason, project=project)
-    print_request_created(path, load_request(path))
+    print_request_created(path, load_request(path), server, project)
     return 0
 
 
@@ -3159,8 +3226,14 @@ def select_job_server(
     return server
 
 
-def print_job_start(manifest: dict[str, Any], manifest_path: Path | None = None) -> None:
-    print("status: started")
+def print_job_start(manifest: dict[str, Any], server: Server, manifest_path: Path | None = None) -> None:
+    print_contract_fields(
+        server,
+        status="started",
+        message="Detached remote job started and can be resumed through status/tail-log.",
+        next_action="Use status --job <job-id> or tail-log --job <job-id> to resume monitoring.",
+        workdir_status="ok",
+    )
     print(f"job_id: {manifest['job_id']}")
     print(f"server: {manifest['server']}")
     if manifest.get("project_id"):
@@ -3309,6 +3382,13 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     payload = request["payload"]
     timeout = args.timeout or default_timeout(settings)
     upload_local_source: Path | None = None
+    print_contract_fields(
+        server,
+        status="pending",
+        message=f"Executing reviewed {operation} request.",
+        next_action="Wait for the workspace probe and remote execution result below.",
+        workdir_status="project_pending" if request_project_id else server.workspace_status,
+    )
     print(f"request_id: {request.get('request_id')}")
     print(f"operation: {operation}")
     print(f"server: {server.label}")
@@ -3381,7 +3461,7 @@ def cmd_run_request(args: argparse.Namespace) -> int:
                 timeout,
                 project=request_project_context,
             )
-            print_job_start(manifest, manifest_path)
+            print_job_start(manifest, server, manifest_path)
             return 0
         return execute_remote_simple(config, settings, server, command, timeout)
 
@@ -3564,6 +3644,31 @@ def cmd_check(args: argparse.Namespace) -> int:
     config, _, _ = load_config_for_args(args)
     server = select_server(config, args.server, args.allow_disabled)
     errors = validate_server(config, server)
+    warnings = []
+    if server.validation_status == "failed":
+        warning = "validation status is failed"
+        if server.validation_error:
+            warning = f"{warning}: {redact_text(config, server.validation_error)}"
+        warnings.append(warning)
+    if server.workspace_status in {"failed", "skipped"}:
+        warnings.append(f"workspace check status is {server.workspace_status}")
+
+    if errors:
+        message = "Server local precheck failed."
+        next_action = "Fix the local precheck failures before running workspace-check, command, exec, or inventory."
+    elif warnings:
+        message = "Server local precheck passed with warnings."
+        next_action = "Review the warnings, then run workspace-check or a short explicit command when ready."
+    else:
+        message = "Server local precheck passed."
+        next_action = "Run workspace-check before remote file operations or reviewed command execution."
+
+    print_contract_fields(
+        server,
+        status="failed" if errors else "ok",
+        message=message,
+        next_action=next_action,
+    )
 
     print(f"server: {server.label}")
     print(f"name: {server.name}")
@@ -3577,26 +3682,16 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"target: {REDACTED}")
         print(f"key_path: {REDACTED}")
 
-    warnings = []
-    if server.validation_status == "failed":
-        warning = "validation status is failed"
-        if server.validation_error:
-            warning = f"{warning}: {redact_text(config, server.validation_error)}"
-        warnings.append(warning)
-    if server.workspace_status in {"failed", "skipped"}:
-        warnings.append(f"workspace check status is {server.workspace_status}")
     for warning in warnings:
         print(f"warning: {warning}")
 
     if errors:
-        print("status: failed")
         for error in errors:
             print(f"- {error}")
         if any(is_passwordless_auth_failure(error) for error in errors):
             print_key_only_repair_guidance("; ".join(errors))
         return 2
 
-    print("status: ok")
     return 0
 
 
@@ -3682,7 +3777,7 @@ def cmd_exec_detached(args: argparse.Namespace) -> int:
     timeout = args.timeout if args.timeout is not None else default_timeout(settings)
     server, project = server_for_args_project(args, settings, server)
     manifest, manifest_path = start_detached_job(config, settings, server, remote_command, args.reason, timeout, project=project)
-    print_job_start(manifest, manifest_path)
+    print_job_start(manifest, server, manifest_path)
     return 0
 
 
@@ -3704,11 +3799,45 @@ def cmd_status(args: argparse.Namespace) -> int:
     parsed = parse_key_value_output(result.stdout)
     status_value = parsed.get("status", "unknown")
     exit_code_text = parsed.get("exit_code", "")
+    message_map = {
+        "running": "Detached remote job is still running.",
+        "succeeded": "Detached remote job finished successfully.",
+        "failed": "Detached remote job finished with a non-zero exit code.",
+        "not_found": "Detached remote job metadata was not found on the remote host.",
+        "unknown": "Detached remote job state could not be determined.",
+    }
+    next_action_map = {
+        "running": "Use tail-log --job <job-id> or rerun status to keep monitoring the detached job.",
+        "succeeded": "Review the produced artifacts or logs before starting the next remote step.",
+        "failed": "Use tail-log --job <job-id> to inspect logs before retrying the detached job.",
+        "not_found": "Confirm the job id or rerun exec-detached/request-command --detached if the job must be started again.",
+        "unknown": "Inspect tail-log or the remote job directory to resolve the detached job state.",
+    }
     if args.json:
-        print(json.dumps({"job_id": args.job, **parsed}, indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "job_id": args.job,
+                    "server_id": server.id,
+                    "server_name": server.name,
+                    "workdir_status": server.workspace_status,
+                    "software_cache_status": server.software_cache_status,
+                    "message": message_map.get(status_value, message_map["unknown"]),
+                    "next_action": next_action_map.get(status_value, next_action_map["unknown"]),
+                    **parsed,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     else:
+        print_contract_fields(
+            server,
+            status=status_value,
+            message=message_map.get(status_value, message_map["unknown"]),
+            next_action=next_action_map.get(status_value, next_action_map["unknown"]),
+        )
         print(f"job_id: {args.job}")
-        print(f"status: {status_value}")
         print(f"pid: {parsed.get('pid', '')}")
         print(f"exit_code: {exit_code_text}")
     if status_value == "failed":

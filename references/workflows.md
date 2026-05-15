@@ -92,7 +92,7 @@ Before updating or replacing an installed `erie-remote-ssh` directory from GitHu
 python <skill-dir>\scripts\install_skill.py --source <release-or-skill-dir> --target <codex-home>\skills\erie-remote-ssh
 ```
 
-The installer backs up the current installed skill to `${CODEX_HOME:-~/.codex}/skill-backups/erie-remote-ssh-YYYYMMDD-HHMMSS` before copying files. It must preserve the user's `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/` content, then report `preserved_hash_verified: true`. If copying fails after the backup is created, the installer must restore the backup rather than leave a mixed partial installation. If a source artifact contains `config/server_list.local.json` or a server-list backup, treat that artifact as unsafe and do not install it.
+The installer backs up the current installed skill to `${CODEX_HOME:-~/.codex}/skill_backups/erie-remote-ssh-YYYYMMDD-HHMMSS` before copying files. It must preserve the user's `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/` content, then report `preserved_hash_verified: true`. If copying fails after the backup is created, the installer must restore the backup rather than leave a mixed partial installation. If a source artifact contains `config/server_list.local.json` or a server-list backup, treat that artifact as unsafe and do not install it.
 
 `reports` is the skill-local runtime artifact root and is not managed by git. Bundled defaults write request files to `${skill_dir}/reports/requests`, downloads to `${skill_dir}/reports/downloads`, detached job manifests to `${skill_dir}/reports/jobs`, and validation temp runs to `${skill_dir}/reports/tmp/validation`; custom settings may override these paths.
 
@@ -290,7 +290,7 @@ Use `scan-software` after key changes, tool installs, or any time the user asks 
 python <skill-dir>\scripts\remote_ssh.py scan-software --settings <settings> --server <id-or-name> --timeout 30
 ```
 
-The command is read-only on the remote host and writes the cached `software_scan` object to the local server list. It scans the configured catalog from `config/defaults.json`, including Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Synopsys VCS, Verdi, URG, DVE, Design Compiler, PrimeTime, Vivado, Vitis, and Xilinx FPGA PCIe devices. The bundled catalog records multi-version installs from reviewed global paths such as `/usr/bin/gcc-[0-9]*`, `/usr/bin/cmake[0-9]*`, `/usr/local/cuda-*/bin/nvcc`, common Synopsys roots like `/tools/synopsys/*/bin`, and Xilinx install roots. `workspace-check` also runs this scan automatically after successful workdir validation.
+The command is read-only on the remote host and writes the cached `software_scan` object to the local server list. It scans the configured catalog from `config/defaults.json`, including Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, Vitis, and Xilinx FPGA PCIe devices. The bundled catalog records multi-version installs from reviewed global paths such as `/usr/bin/gcc-[0-9]*`, `/usr/bin/cmake[0-9]*`, `/usr/local/cuda-*/bin/nvcc`, and Xilinx install roots. To avoid Windows command-length failures, the helper sends the full scan script over SSH stdin using a short remote shell command instead of embedding the entire script in a single SSH argument. `workspace-check` also runs this scan automatically after successful workdir validation.
 
 The software catalog is trusted local configuration because its command templates are rendered into the remote scan script. Use only reviewed settings, and treat cached `raw_summary` as local operational data rather than public documentation.
 
@@ -399,7 +399,7 @@ Use inventory for CPU/GPU/FPGA/software environment discovery:
 python <skill-dir>\scripts\remote_ssh.py inventory --settings <settings> --server <id-or-name> --timeout 30
 ```
 
-The report includes hostname, kernel, CPU model, CPU thread count, NVIDIA GPU summary, Xilinx FPGA summary, Python, Conda, CUDA, GCC, G++, CMake, VCS, Verdi, URG, DVE, Design Compiler, PrimeTime, Vivado, and Vitis where available.
+The report includes hostname, kernel, CPU model, CPU thread count, NVIDIA GPU summary, Xilinx FPGA summary, Python, Conda, CUDA, GCC, G++, CMake, Vivado, and Vitis where available.
 
 Missing tools are reported as `not detected`; this is not necessarily an error.
 
@@ -408,6 +408,7 @@ Inventory output is a report only. Use `scan-software` when a software result sh
 ## Troubleshooting
 
 - `OpenSSH client 'ssh' was not found on PATH`: Install or enable OpenSSH Client locally, then retry.
+- `generated command line was too long on Windows`: The helper tried to start SSH with an oversized command. Keep long remote scripts on stdin transport paths such as the bundled software scan flow instead of embedding them directly in the SSH argument list.
 - `key file not found`: Confirm `default_key_dir` and `key_name`; do not create or move keys unless the user asks.
 - `Permission denied`: Confirm username, key, and server-side authorized keys.
 - `Connection timed out`: Confirm VPN/network reachability, host, port, and server state.

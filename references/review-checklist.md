@@ -19,7 +19,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Every file under `references/` is directly linked from `SKILL.md`.
 - No README, installation guide, changelog, or unrelated documentation is added inside the skill.
 - Paths, validation targets, and tool locations are settings-driven rather than hardcoded in scripts.
-- Software inventory probes, multi-version PATH scans, executable globs, Synopsys install roots, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
+- Software inventory probes, multi-version PATH scans, executable globs, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
 - Discovery and add-server workflows are represented in `SKILL.md` without bloating the skill body.
 - SSH config alias fallback and detached job workflows are represented in `SKILL.md` without bloating the skill body.
 - The configuration gate is documented at both levels: the agent asks the user in conversation first, and the CLI requires explicit manual/script/cancel input before any server-list mutation.
@@ -32,11 +32,11 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Root and release `.gitattributes` declare UTF-8 working-tree encoding for `.gitattributes`, `.gitignore`, Markdown, YAML, and JSON text files.
 - Release artifacts are built with `scripts/build_release.py`; source, `dist/erie-remote-ssh-v<version>`, `dist/erie-remote-ssh-v<version>.zip`, and the installed skill key files match byte-for-byte when installed validation is enabled.
 - Skill-local `.gitignore` ignores `config/server_list.local.json`, backups, `reports/`, legacy request/download roots, tmp/log output, and complements repository-level ignores.
-- Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, `scripts/install_skill.py` creates a backup under `${CODEX_HOME:-~/.codex}/skill-backups`, preserves installed `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/`, and reports `preserved_hash_verified: true`.
+- Before updating or replacing the skill from GitHub, a local directory, a release artifact, or another source, `scripts/install_skill.py` creates a backup under `${CODEX_HOME:-~/.codex}/skill_backups`, preserves installed `config/server_list.local.json`, `config/server_list.local.json.bak.*`, and `reports/`, and reports `preserved_hash_verified: true`.
 - Failed installations restore the backup and do not leave a partial mixed installed skill.
 - Source artifacts must not contain `config/server_list.local.json` or server-list backup files; installation must reject them instead of overwriting user configuration.
 - Source artifacts must not contain runtime directories such as `reports/`, `requests/`, `downloads/`, `tmp/`, or `logs/`; installation must reject them instead of silently skipping or reporting them as preserved.
-- Backup directory failures, including a non-directory `${CODEX_HOME:-~/.codex}/skill-backups` path, must fail with a clean `error:` message and no traceback while leaving the installed target unchanged.
+- Backup directory failures, including a non-directory `${CODEX_HOME:-~/.codex}/skill_backups` path, must fail with a clean `error:` message and no traceback while leaving the installed target unchanged.
 
 ## Safety and Privacy
 
@@ -134,7 +134,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Run wrapper tests for `.bat`, `.ps1`, and `.sh` entry points where the runner exists.
 - Run isolated no-ref validation from a temporary copy that does not contain a repository-level `ref` directory.
 - Run installed-skill validation after copying the refreshed artifact into `$CODEX_HOME/skills/erie-remote-ssh`; stale installed files must fail validation.
-- Run safe installer tests proving backups land under `$CODEX_HOME/skill-backups`, installed `server_list.local.json`, backup files, and `reports/` survive installation unchanged, protected hashes are verified, and failed copies roll back.
+- Run safe installer tests proving backups land under `$CODEX_HOME/skill_backups`, installed `server_list.local.json`, backup files, and `reports/` survive installation unchanged, protected hashes are verified, and failed copies roll back.
 - Run installer rejection tests for source runtime artifacts and invalid backup directory paths; both must leave the target unchanged and print no traceback.
 - Confirm `--with-ssh` requires an explicit real `--server-list`; without one, only offline skill development confidence can be claimed.
 - Confirm `git status` is clean after validation.

@@ -218,13 +218,6 @@ def fake_scan_output() -> str:
             "software:gcc:installed:/usr/bin/gcc-12:gcc (Ubuntu) 12.2.0:",
             "software:gpp:installed:/usr/bin/g++:g++ (Ubuntu) 12.2.0:",
             "software:cmake:installed:/usr/bin/cmake:cmake version 3.25.0:",
-            "software:vcs:installed:/tools/synopsys/vcs/O-2023.12/bin/vcs:VCS O-2023.12:/tools/synopsys/vcs/O-2023.12",
-            "software:vcs:installed:/opt/synopsys/vcs/O-2024.03/bin/vcs:VCS O-2024.03:/opt/synopsys/vcs/O-2024.03",
-            "software:verdi:installed:/tools/synopsys/verdi/O-2023.12/bin/verdi:Verdi O-2023.12:/tools/synopsys/verdi/O-2023.12",
-            "software:urg:installed:/tools/synopsys/vcs/O-2023.12/bin/urg:URG O-2023.12:/tools/synopsys/vcs/O-2023.12",
-            "software:dve:installed:/tools/synopsys/vcs/O-2023.12/bin/dve:DVE O-2023.12:/tools/synopsys/vcs/O-2023.12",
-            "software:design_compiler:installed:/tools/synopsys/dc/O-2023.12/bin/dc_shell:Design Compiler O-2023.12:/tools/synopsys/dc/O-2023.12",
-            "software:primetime:installed:/tools/synopsys/pt/O-2023.12/bin/pt_shell:PrimeTime O-2023.12:/tools/synopsys/pt/O-2023.12",
             "software:vivado:installed:/tools/Xilinx/Vivado/2024.1/bin/vivado:Vivado v2024.1:/tools/Xilinx/Vivado/2024.1",
             "software:vitis:installed:/tools/Xilinx/Vitis/2024.1/bin/vitis:Vitis v2024.1:/tools/Xilinx/Vitis/2024.1",
             "fpga_device:0:0000:01:00.0:0000:01:00.1",
@@ -235,66 +228,32 @@ def fake_scan_output() -> str:
 
 def compact_scan_inventory() -> dict[str, Any]:
     return {
-        "catalog_version": 3,
+        "catalog_version": 2,
         "software_catalog": [
             {
                 "id": "gcc",
                 "commands": ["gcc"],
                 "path_scan": "all",
+                "executable_globs": ["/usr/bin/gcc-[0-9]*"],
                 "version_command": "{path} --version 2>&1 | head -n 1",
             },
             {
                 "id": "cuda",
                 "commands": ["nvcc"],
+                "executable_globs": ["/usr/local/cuda-*/bin/nvcc"],
                 "version_command": "{path} --version 2>&1 | awk '/release/ {print $0; exit}'",
                 "install_path_command": "dirname \"$(dirname {path})\"",
             },
             {
-                "id": "vcs",
-                "commands": ["vcs"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
-                "id": "verdi",
-                "commands": ["verdi"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
-                "id": "urg",
-                "commands": ["urg"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
-                "id": "dve",
-                "commands": ["dve"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
-                "id": "design_compiler",
-                "commands": ["dc_shell"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
-                "id": "primetime",
-                "commands": ["pt_shell"],
-                "path_scan": "all",
-                "version_command": "{path} -version 2>&1 | head -n 1",
-                "install_path_command": "dirname \"$(dirname {path})\"",
-            },
-            {
                 "id": "vivado",
-                "commands": ["vivado"],
-                "version_command": "{path} -version 2>&1 | head -n 1",
+                "directory_scans": [
+                    {
+                        "base_dirs": ["/tools/Xilinx"],
+                        "subdir": "Vivado",
+                        "executable": "bin/vivado",
+                        "version_command": "{path} -version 2>&1 | head -n 1",
+                    }
+                ],
             },
         ],
     }
@@ -416,6 +375,34 @@ def create_invalid_utf8_helper(tmp_dir: Path) -> Path:
         script.write_text(f"@echo off\r\npython \"{helper}\" %*\r\nexit /b %ERRORLEVEL%\r\n", encoding="utf-8")
     else:
         script = helper_dir / "invalid-utf8.sh"
+        script.write_text(f"#!/usr/bin/env sh\npython3 {str(helper)!r} \"$@\"\n", encoding="utf-8")
+        script.chmod(0o755)
+    return script
+
+
+def create_stdin_lf_helper(tmp_dir: Path) -> Path:
+    helper_dir = tmp_dir / "stdin-lf-helper"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    helper = helper_dir / "stdin_lf_check.py"
+    helper.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "data = sys.stdin.buffer.read()",
+                "if b'\\r\\n' in data:",
+                "    sys.stderr.write('crlf-detected\\n')",
+                "    raise SystemExit(3)",
+                "sys.stdout.write('lf-only\\n')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        script = helper_dir / "stdin-lf-check.cmd"
+        script.write_text(f"@echo off\r\npython \"{helper}\" %*\r\nexit /b %ERRORLEVEL%\r\n", encoding="utf-8")
+    else:
+        script = helper_dir / "stdin-lf-check.sh"
         script.write_text(f"#!/usr/bin/env sh\npython3 {str(helper)!r} \"$@\"\n", encoding="utf-8")
         script.chmod(0o755)
     return script
@@ -1094,9 +1081,6 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     positive_server = config["servers"][0]["id"]
     scan_result = run_tool(["scan-software", "--settings", str(temp_settings), "--server", positive_server])
     assert_contains(scan_result.stdout, "software_scan_status: ok", "scan-software output")
-    assert_contains(scan_result.stdout, "vcs\tinstalled", "scan-software output")
-    assert_contains(scan_result.stdout, "verdi\tinstalled", "scan-software output")
-    assert_contains(scan_result.stdout, "design_compiler\tinstalled", "scan-software output")
     assert_contains(scan_result.stdout, "vivado\tinstalled", "scan-software output")
 
     updated = load_ref(server_list)
@@ -1104,10 +1088,6 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     if not snapshot or snapshot.get("status") != "ok":
         raise ValidationError(f"scan-software did not cache an ok snapshot: {updated}")
     tools = snapshot.get("tools", {})
-    if tools.get("vcs", {}).get("install_path") != "/tools/synopsys/vcs/O-2023.12":
-        raise ValidationError(f"scan-software did not cache VCS install path: {snapshot}")
-    if tools.get("design_compiler", {}).get("install_path") != "/tools/synopsys/dc/O-2023.12":
-        raise ValidationError(f"scan-software did not cache Design Compiler install path: {snapshot}")
     if tools.get("vivado", {}).get("install_path") != "/tools/Xilinx/Vivado/2024.1":
         raise ValidationError(f"scan-software did not cache Vivado install path: {snapshot}")
     if snapshot.get("fpga_devices", [{}])[0].get("pcie_bdf_mgmt") != "0000:01:00.0":
@@ -1118,35 +1098,15 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError(f"scan-software did not cache all GCC versions: {snapshot}")
     if len(tools.get("cuda", {}).get("versions", [])) != 2:
         raise ValidationError(f"scan-software did not cache all CUDA versions: {snapshot}")
-    if len(tools.get("vcs", {}).get("versions", [])) != 2:
-        raise ValidationError(f"scan-software did not cache all VCS versions: {snapshot}")
 
     software_table_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server])
     assert_contains(software_table_result.stdout, "gcc\tinstalled\t/usr/bin/gcc-11", "cached software table output")
     assert_contains(software_table_result.stdout, "cuda\tinstalled\t/usr/local/cuda-12.2/bin/nvcc", "cached software table output")
-    assert_contains(software_table_result.stdout, "vcs\tinstalled\t/opt/synopsys/vcs/O-2024.03/bin/vcs", "cached software table output")
 
     software_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "cuda"])
     assert_contains(software_result.stdout, "status: installed", "cached cuda output")
     assert_contains(software_result.stdout, "path: /usr/local/cuda-11.8/bin/nvcc", "cached cuda output")
     assert_contains(software_result.stdout, "version_entry: /usr/local/cuda-12.2/bin/nvcc", "cached cuda output")
-
-    vcs_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "vcs"])
-    assert_contains(vcs_result.stdout, "status: installed", "cached vcs output")
-    assert_contains(vcs_result.stdout, "path: /tools/synopsys/vcs/O-2023.12/bin/vcs", "cached vcs output")
-    assert_contains(vcs_result.stdout, "install_path: /tools/synopsys/vcs/O-2023.12", "cached vcs output")
-    assert_contains(vcs_result.stdout, "version_entry: /opt/synopsys/vcs/O-2024.03/bin/vcs", "cached vcs output")
-
-    dc_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "design_compiler"])
-    assert_contains(dc_result.stdout, "status: installed", "cached design_compiler output")
-    assert_contains(dc_result.stdout, "path: /tools/synopsys/dc/O-2023.12/bin/dc_shell", "cached design_compiler output")
-    assert_contains(dc_result.stdout, "install_path: /tools/synopsys/dc/O-2023.12", "cached design_compiler output")
-
-    inventory_result = run_tool(["inventory", "--settings", str(temp_settings), "--server", positive_server])
-    assert_contains(inventory_result.stdout, "vcs: VCS O-2023.12", "cached inventory output")
-    assert_contains(inventory_result.stdout, "verdi: Verdi O-2023.12", "cached inventory output")
-    assert_contains(inventory_result.stdout, "design_compiler: Design Compiler O-2023.12", "cached inventory output")
-    assert_contains(inventory_result.stdout, "primetime: PrimeTime O-2023.12", "cached inventory output")
 
     bad_catalog = tmp_dir / "bad-catalog-settings.json"
     bad_settings = load_ref(temp_settings)
@@ -1692,6 +1652,52 @@ def subprocess_decoding_tests(tmp_dir: Path) -> None:
     assert_contains(result.stdout, "ok", "invalid utf8 helper stdout")
     assert_contains(result.stderr, "bad byte:", "invalid utf8 helper stderr")
 
+    stdin_helper = create_stdin_lf_helper(tmp_dir)
+    stdin_result = remote_ssh.run_ssh([str(stdin_helper)], 5, input_text="set -u\nprintf 'ok\\n'\n")
+    if stdin_result.returncode != 0:
+        raise ValidationError(
+            "run_ssh must preserve LF-only stdin for remote shell transport\n"
+            f"stdout:\n{stdin_result.stdout}\nstderr:\n{stdin_result.stderr}"
+        )
+    assert_contains(stdin_result.stdout, "lf-only", "stdin lf helper stdout")
+
+
+def software_scan_transport_tests(tmp_dir: Path) -> None:
+    settings = remote_ssh.load_settings(SKILL_DIR / "config" / "defaults.json")
+    config = load_ref(create_validation_server_list(tmp_dir / "transport-fixture"))
+    server = remote_ssh.select_server(config, validation_name(settings, "positive_server"), False)
+    script = remote_ssh.build_software_scan_script(settings)
+    command_args = remote_ssh.build_ssh_args(config, settings, server, remote_ssh.SOFTWARE_SCAN_TRANSPORT_COMMAND, False)
+    command_text = remote_ssh.display_command(command_args)
+    if remote_ssh.SOFTWARE_SCAN_TRANSPORT_COMMAND not in command_text:
+        raise ValidationError("software scan transport must use a short remote shell command")
+    if script in command_text:
+        raise ValidationError("software scan transport must not inline the full scan script into the SSH command")
+    if os.name == "nt" and len(command_text) >= 8191:
+        raise ValidationError(
+            f"software scan transport command remains too long for Windows command execution: {len(command_text)}"
+        )
+
+
+def ssh_error_classification_tests() -> None:
+    original_run = remote_ssh.subprocess.run
+
+    def raise_winerror_206(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError(206, "The filename or extension is too long")
+
+    remote_ssh.subprocess.run = raise_winerror_206
+    try:
+        try:
+            remote_ssh.run_ssh(["ssh", "example"], 5)
+        except remote_ssh.RemoteSshError as exc:
+            text = str(exc)
+            assert_contains(text, "too long on Windows", "WinError 206 classification")
+            assert_not_contains(text, "not found on PATH", "WinError 206 classification")
+        else:
+            raise ValidationError("run_ssh should translate WinError 206 into a command-length error")
+    finally:
+        remote_ssh.subprocess.run = original_run
+
 
 def backup_collision_tests(tmp_dir: Path) -> None:
     target = tmp_dir / "backup-collision" / "server_list.local.json"
@@ -2130,9 +2136,9 @@ def install_skill_protection_tests(tmp_dir: Path) -> None:
         raise ValidationError("installer did not update release-managed files")
     if stale_release_file.exists():
         raise ValidationError("installer left stale release-managed files from the old target")
-    backups = list((codex_home / "skill-backups").glob("erie-remote-ssh-*"))
+    backups = list((codex_home / "skill_backups").glob("erie-remote-ssh-*"))
     if not backups:
-        raise ValidationError("installer did not create a backup under CODEX_HOME/skill-backups")
+        raise ValidationError("installer did not create a backup under CODEX_HOME/skill_backups")
     backup_config = backups[0] / "config" / "server_list.local.json"
     if backup_config.read_text(encoding="utf-8") != '{"sentinel": "preserve local config"}\n':
         raise ValidationError("installer backup did not contain the original local server list")
@@ -2182,7 +2188,7 @@ def install_skill_protection_tests(tmp_dir: Path) -> None:
     write_fake_skill_tree(backup_block_source, "backup block new release")
     backup_block_config = backup_block_target / "config" / "server_list.local.json"
     backup_block_config.write_text('{"sentinel": "backup block local config"}\n', encoding="utf-8")
-    backup_block_root = backup_block_home / "skill-backups"
+    backup_block_root = backup_block_home / "skill_backups"
     backup_block_root.parent.mkdir(parents=True, exist_ok=True)
     backup_block_root.write_text("path blocks backup directory\n", encoding="utf-8")
     backup_block_env = os.environ.copy()
@@ -2196,7 +2202,7 @@ def install_skill_protection_tests(tmp_dir: Path) -> None:
         check=False,
     )
     if backup_block.returncode == 0:
-        raise ValidationError("installer should fail cleanly when skill-backups is not a directory")
+        raise ValidationError("installer should fail cleanly when skill_backups is not a directory")
     assert_contains(backup_block.stderr, "Install failed", "installer backup directory error")
     assert_not_contains(backup_block.stderr, "Traceback", "installer backup directory error")
     if "backup block original" not in (backup_block_target / "SKILL.md").read_text(encoding="utf-8"):
@@ -2969,6 +2975,7 @@ def ssh_tests(settings: dict[str, Any], settings_path: Path, server_list: Path, 
         server_list,
         requests_dir=tmp_dir / "ssh-requests",
         downloads_dir=tmp_dir / "ssh-downloads",
+        upload_roots=[str(tmp_dir)],
     )
     base = tool_base_args(ssh_settings, server_list)
     ssh_server = validation_name(settings, "ssh_server", validation_name(settings, "positive_server"))
@@ -3301,90 +3308,6 @@ def software_catalog_documentation_audit() -> None:
             raise ValidationError(f"software catalog documentation must mention {term!r}")
 
 
-def synopsys_catalog_audit(settings: dict[str, Any]) -> None:
-    catalog = remote_ssh.software_catalog(settings)
-    entries = {str(item.get("id", "")).strip(): item for item in catalog}
-    required = {
-        "vcs": {
-            "commands": ["vcs"],
-            "globs": [
-                "/tools/synopsys/*/bin/vcs",
-                "/opt/synopsys/*/bin/vcs",
-                "/usr/synopsys/*/bin/vcs",
-                "/eda/synopsys/*/bin/vcs",
-            ],
-        },
-        "verdi": {
-            "commands": ["verdi", "verdi3"],
-            "globs": [
-                "/tools/synopsys/*/bin/verdi",
-                "/tools/synopsys/*/bin/verdi3",
-                "/opt/synopsys/*/bin/verdi",
-                "/opt/synopsys/*/bin/verdi3",
-                "/usr/synopsys/*/bin/verdi",
-                "/usr/synopsys/*/bin/verdi3",
-                "/eda/synopsys/*/bin/verdi",
-                "/eda/synopsys/*/bin/verdi3",
-            ],
-        },
-        "urg": {
-            "commands": ["urg"],
-            "globs": [
-                "/tools/synopsys/*/bin/urg",
-                "/opt/synopsys/*/bin/urg",
-                "/usr/synopsys/*/bin/urg",
-                "/eda/synopsys/*/bin/urg",
-            ],
-        },
-        "dve": {
-            "commands": ["dve"],
-            "globs": [
-                "/tools/synopsys/*/bin/dve",
-                "/opt/synopsys/*/bin/dve",
-                "/usr/synopsys/*/bin/dve",
-                "/eda/synopsys/*/bin/dve",
-            ],
-        },
-        "design_compiler": {
-            "commands": ["dc_shell", "dc_shell-xg-t"],
-            "globs": [
-                "/tools/synopsys/*/bin/dc_shell",
-                "/tools/synopsys/*/bin/dc_shell-xg-t",
-                "/opt/synopsys/*/bin/dc_shell",
-                "/opt/synopsys/*/bin/dc_shell-xg-t",
-                "/usr/synopsys/*/bin/dc_shell",
-                "/usr/synopsys/*/bin/dc_shell-xg-t",
-                "/eda/synopsys/*/bin/dc_shell",
-                "/eda/synopsys/*/bin/dc_shell-xg-t",
-            ],
-        },
-        "primetime": {
-            "commands": ["pt_shell"],
-            "globs": [
-                "/tools/synopsys/*/bin/pt_shell",
-                "/opt/synopsys/*/bin/pt_shell",
-                "/usr/synopsys/*/bin/pt_shell",
-                "/eda/synopsys/*/bin/pt_shell",
-            ],
-        },
-    }
-    for tool_id, expectation in required.items():
-        item = entries.get(tool_id)
-        if item is None:
-            raise ValidationError(f"default software catalog missing Synopsys tool {tool_id!r}")
-        if str(item.get("path_scan", "")).strip().casefold() != "all":
-            raise ValidationError(f"Synopsys tool {tool_id!r} must use path_scan=all")
-        if list(item.get("commands", [])) != expectation["commands"]:
-            raise ValidationError(f"Synopsys tool {tool_id!r} commands do not match the expected contract")
-        if str(item.get("version_command", "")).strip() != "{path} -version 2>&1 | head -n 1":
-            raise ValidationError(f"Synopsys tool {tool_id!r} must use the standard -version probe")
-        if str(item.get("install_path_command", "")).strip() != "dirname \"$(dirname {path})\"":
-            raise ValidationError(f"Synopsys tool {tool_id!r} must expose install_path_command")
-        globs = list(item.get("executable_globs", []) or [])
-        if globs != expectation["globs"]:
-            raise ValidationError(f"Synopsys tool {tool_id!r} executable_globs do not match the expected roots")
-
-
 def default_reports_path_audit(settings: dict[str, Any]) -> None:
     expected_requests = SKILL_DIR / "reports" / "requests"
     expected_downloads = SKILL_DIR / "reports" / "downloads"
@@ -3654,6 +3577,8 @@ def is_release_file(path: Path, root: Path) -> bool:
         return False
     if rel.as_posix() == "config/server_list.local.json":
         return False
+    if name == "release_receipt.json":
+        return False
     if name == "project.local.json":
         return False
     if name.startswith("server_list.local.json.bak") or ".bak." in name or name.endswith(".bak"):
@@ -3674,6 +3599,8 @@ def zip_file_bytes(zip_path: Path) -> dict[str, bytes]:
     with zipfile.ZipFile(zip_path) as archive:
         for name in sorted(archive.namelist()):
             if name.endswith("/"):
+                continue
+            if name.casefold() == "release_receipt.json":
                 continue
             files[name] = archive.read(name)
     return files
@@ -3838,7 +3765,7 @@ def installed_skill_audit() -> None:
         (installed / rel).read_text(encoding="utf-8")
         for rel in ["SKILL.md", "references/configuration.md", "references/workflows.md", "references/review-checklist.md"]
     )
-    required = ["configure-key", ENCODING_CANARY, "field-menu", "skill-backups", "server_list.local.json"]
+    required = ["configure-key", ENCODING_CANARY, "field-menu", "skill_backups", "server_list.local.json"]
     for marker in required:
         if marker not in installed_text:
             raise ValidationError(f"installed skill missing current marker {marker!r}: {installed}")
@@ -4115,7 +4042,6 @@ def main() -> int:
         extraneous_docs_audit()
         references_linked_audit()
         software_catalog_documentation_audit()
-        synopsys_catalog_audit(settings)
         default_reports_path_audit(settings)
         skill_local_gitignore_audit()
         repository_gitignore_audit()
@@ -4129,6 +4055,8 @@ def main() -> int:
         choices_tests(settings, settings_path, server_list, ref_config, tmp_dir)
         negative_tests(settings_path, server_list, ref_config, tmp_dir)
         subprocess_decoding_tests(tmp_dir)
+        software_scan_transport_tests(tmp_dir)
+        ssh_error_classification_tests()
         backup_collision_tests(tmp_dir)
         release_retention_policy_tests(tmp_dir)
         release_gate_versioned_naming_tests(tmp_dir)

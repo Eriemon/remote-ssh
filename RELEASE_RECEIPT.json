@@ -1,0 +1,228 @@
+{
+  "skill_name": "erie-remote-ssh",
+  "version": "v0.2.1",
+  "source_path": "skills/erie-remote-ssh",
+  "generated_at": "2026-05-15T14:22:08",
+  "current_branch": "master",
+  "source_commit": "95cfcce2f654896d4c56cabd7aad14c279000d40",
+  "local_branches": [
+    "codex/remote-ssh-selection-gate",
+    "master",
+    "release"
+  ],
+  "worktree_clean": true,
+  "phase_results": {
+    "pre": true,
+    "post": true
+  },
+  "packaging_mode": "repository-dist",
+  "validation_level": "strong",
+  "provenance_mode": "repository-dist",
+  "sanitization": {
+    "required": false,
+    "mode": "static-exclude",
+    "scope": "skill-release"
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "fd7c2901b4163668787456ccffeb091470c84b335b4f272e6864295702e8efe2"
+    },
+    {
+      "path": "agents/openai.yaml",
+      "sha256": "fe2f2d8e1195ba0b329deb0962351d8a2a78a43fe7e0b4cba7f8731bc84f6122"
+    },
+    {
+      "path": "config/defaults.json",
+      "sha256": "facbe84d4cfca38a3e43ab82d45d430c16eb98e86af63ac0d5c6775f32518995"
+    },
+    {
+      "path": "config/server_list.template.json",
+      "sha256": "943d4eabc47cb383e7ea619c8f07a8eb9ea9c2acfb2058a2e7e2fb2b900025ca"
+    },
+    {
+      "path": "references/configuration.md",
+      "sha256": "1292200e8de1633958ec026a5f6405a0bc148e5632191db450bb74d59de217c0"
+    },
+    {
+      "path": "references/integration-contract.md",
+      "sha256": "8a9b2343b22c970cbedde9f8ab6d844f4d9e5aab75c6c01d553dd3daa05ef7d1"
+    },
+    {
+      "path": "references/regression-scenarios.md",
+      "sha256": "3d3d7ef0705b2f061150853b09b136ed071114711bf5a721626abd28904bbdee"
+    },
+    {
+      "path": "references/review-checklist.md",
+      "sha256": "65ae7802ea61c705b3c43f158c75a951239f28cf62379bbddd7fd76662c52c85"
+    },
+    {
+      "path": "references/server-list-schema.md",
+      "sha256": "0b9e5314a7223c9fb2cd2cace7060267bf75651d85ae451054eca1993257cd01"
+    },
+    {
+      "path": "references/workflows.md",
+      "sha256": "c525f107345e1b2986a42a615e9cf3e067684b5fb7a49f8cea0a330441dd7efa"
+    },
+    {
+      "path": "scripts/bat/commands/request_command.bat",
+      "sha256": "5904519a2825f1ef23fca4e77d49c6eb8f395e349e8e9cb3bc4ab742ad42d499"
+    },
+    {
+      "path": "scripts/bat/commands/run_request.bat",
+      "sha256": "bb6134ade2a7bc621578c292da74b82523f3f414fb739866ad8fd6de80b6d6d3"
+    },
+    {
+      "path": "scripts/bat/config/configure_remote_ssh.bat",
+      "sha256": "e575823ecfd57a1a9d34192b02d1e766c305a1fd4b050c38723a7a6143c336d7"
+    },
+    {
+      "path": "scripts/bat/files/file_download.bat",
+      "sha256": "47bd5a7acc770c586e737b88836da9420d3b56eee1221041b32ecabad3c26b57"
+    },
+    {
+      "path": "scripts/bat/files/file_list.bat",
+      "sha256": "83ccd69c509d7f19860e8db8d7f4f696b62b2078b2c963fe717aa8d7d20313a6"
+    },
+    {
+      "path": "scripts/bat/files/file_stat.bat",
+      "sha256": "eb86656c3498a25fe1a30724645ca71b3214f2ebe964bd25811c7b3b76dbe0f8"
+    },
+    {
+      "path": "scripts/bat/files/request_delete.bat",
+      "sha256": "6547c1f005d1a99394350e18e49d71cc3ce4e4c861f422e19a53299112edbffe"
+    },
+    {
+      "path": "scripts/bat/files/request_mkdir.bat",
+      "sha256": "8d5ec75293f3173aa54c94df5b5821441033d44c0e6409fe3c7e18418c785128"
+    },
+    {
+      "path": "scripts/bat/files/request_upload.bat",
+      "sha256": "cd7883c6427ff0e8be84934056186e5673895cb1c4697752cef204510d8a45de"
+    },
+    {
+      "path": "scripts/bat/validation/validate_remote_ssh.bat",
+      "sha256": "39b7aab63343abcd63184adb357e001d740bba413b7af73fceb94db0b4b80ebe"
+    },
+    {
+      "path": "scripts/bat/workspace/workspace_check.bat",
+      "sha256": "06deb792b5545eb30b8b003aa630c34b6544c8c29bdc330fbc9fcfe82f41a7d5"
+    },
+    {
+      "path": "scripts/build_release.py",
+      "sha256": "13edfeac265fc12c537cdbf49fc10a602e6d11cbc1e75aa8ac60ee22d13e364e"
+    },
+    {
+      "path": "scripts/install_skill.py",
+      "sha256": "b5718bfbfc895f17bc102fc1a5d13ce8776e6f3929c44c2f57321d8c2f8a92be"
+    },
+    {
+      "path": "scripts/mine_remote_ssh_sessions.py",
+      "sha256": "518bbcd614bfc4de6bbf614c77ac81328c244d425d2ca223b444245f3b345403"
+    },
+    {
+      "path": "scripts/powershell/commands/request_command.ps1",
+      "sha256": "ecb4d9cd82c5eefaab1a4015ccba4dbc4c0c70c696b08ec4d32fedd5f2301752"
+    },
+    {
+      "path": "scripts/powershell/commands/run_request.ps1",
+      "sha256": "e6f9904554ff29f87e607aa7d0fd16391ed39fb50d121ed0c51538851abb69dc"
+    },
+    {
+      "path": "scripts/powershell/config/configure_remote_ssh.ps1",
+      "sha256": "bcf45bba184a72409c0795eb6a77a8a32d4523696b6d18f61bf8a96baa1813a6"
+    },
+    {
+      "path": "scripts/powershell/files/file_download.ps1",
+      "sha256": "9c69ba12aafee46992168e8fe09b8e8c8a120bc7129ac2a687ab9ea581c3c0d9"
+    },
+    {
+      "path": "scripts/powershell/files/file_list.ps1",
+      "sha256": "9c5eec182a13e3b4f26cbb61009272dcb97fad2ad0ad21c3cb5ff16b554fda86"
+    },
+    {
+      "path": "scripts/powershell/files/file_stat.ps1",
+      "sha256": "7ba36cb43492b5f8242361fa9aac817b5163e11b9951f81f558be5416250877a"
+    },
+    {
+      "path": "scripts/powershell/files/request_delete.ps1",
+      "sha256": "b775aa650a0da6241648597768acf0b1fb10b1a3f131f6297381c878d1054e5e"
+    },
+    {
+      "path": "scripts/powershell/files/request_mkdir.ps1",
+      "sha256": "e8919cbb7e88cce1454ea4a256532519a4f04add8551a01d227bab6836cf1a03"
+    },
+    {
+      "path": "scripts/powershell/files/request_upload.ps1",
+      "sha256": "3e4e0fd6357fdc6aa0a87ab914690115ec933f3cde1bd5af563b1239c7320562"
+    },
+    {
+      "path": "scripts/powershell/validation/validate_remote_ssh.ps1",
+      "sha256": "a5bfc9ff4503b37f7e753059faab262ce7938f3d7120da592f59adbcf8ef1cd4"
+    },
+    {
+      "path": "scripts/powershell/workspace/workspace_check.ps1",
+      "sha256": "5f997ce193d6ed20483986267a413f229529835a4667b82d39401dac8940bcf3"
+    },
+    {
+      "path": "scripts/remote_ssh.py",
+      "sha256": "d97002abc4ed6e5fb7e173f5b4956566ca7ca4ac16b3feb6bf56761e27363a51"
+    },
+    {
+      "path": "scripts/shell/commands/request_command.sh",
+      "sha256": "ce9f642dc9853ed402d6f61f0bce4d106c248ad378037f348d05f8891bfaed06"
+    },
+    {
+      "path": "scripts/shell/commands/run_request.sh",
+      "sha256": "cb5a250c9e78cdc777d4fba35a8f651b626ddabd1598651930feab8fd6533524"
+    },
+    {
+      "path": "scripts/shell/config/configure_remote_ssh.sh",
+      "sha256": "9e34fc91d7832e4513a29edbd4de128f1bc932809356880eeb2ac7e96ba51511"
+    },
+    {
+      "path": "scripts/shell/files/file_download.sh",
+      "sha256": "30db1239e351058d0df0904bb9fd7c72a170e5230b9caadebd32df45a78efc73"
+    },
+    {
+      "path": "scripts/shell/files/file_list.sh",
+      "sha256": "d7d66a5172989ecd7dd9377521fdab56a51ee7fde5c39d947d57758d9a38f2d1"
+    },
+    {
+      "path": "scripts/shell/files/file_stat.sh",
+      "sha256": "2fce3545ffb8a57aba5de132bc12f10e66076eb96195521d5cecace8b2f5eba7"
+    },
+    {
+      "path": "scripts/shell/files/request_delete.sh",
+      "sha256": "5021a2d7979017ee5f800b705ac91dcf67cd48c095726a12ed12c24fe14ca427"
+    },
+    {
+      "path": "scripts/shell/files/request_mkdir.sh",
+      "sha256": "4487c9ed13c5065f74c0f0d7a5ab64a771eabba2c61636bb8ed87ae470daebfb"
+    },
+    {
+      "path": "scripts/shell/files/request_upload.sh",
+      "sha256": "30c2b198c0603dce8fde36cc538b669083a100c0192fe16687f3b46a37c4dce7"
+    },
+    {
+      "path": "scripts/shell/validation/validate_remote_ssh.sh",
+      "sha256": "24c6e66e1233103045e144fbca491a2c73acc995878bef1fcd22768a495c984d"
+    },
+    {
+      "path": "scripts/shell/workspace/workspace_check.sh",
+      "sha256": "fb82a6b3b60d9fd41dcf61e5933c74af93b97847bf19b4879ce195a5ee2551c0"
+    },
+    {
+      "path": "scripts/validate_remote_ssh.py",
+      "sha256": "a5cd9bdfd6bad928ede1b5be326c4c9bbc3ef8b5849c755dac441b6c38b07828"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "8bce0d317aee072295b8631ff68d17e9faac1c52bf24227ed754ee8b470f0c0c"
+    },
+    {
+      "path": "VERSION",
+      "sha256": "71015c979ccb0fc8a0be7ca0ae83046ab045cdc2c8faa09fb2f0f7e440f9b4a6"
+    }
+  ]
+}

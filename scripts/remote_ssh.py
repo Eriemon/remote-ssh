@@ -28,26 +28,11 @@ from typing import Any, Iterable
 
 
 DEFAULT_TIMEOUT = 20
-DEFAULT_SOFTWARE_KEYS = [
-    "python",
-    "conda",
-    "cuda",
-    "nvidia_driver",
-    "gcc",
-    "gpp",
-    "cmake",
-    "vcs",
-    "verdi",
-    "urg",
-    "dve",
-    "design_compiler",
-    "primetime",
-    "vivado",
-    "vitis",
-]
+DEFAULT_SOFTWARE_KEYS = ["python", "conda", "cuda", "nvidia_driver", "gcc", "gpp", "cmake", "vivado", "vitis"]
 REDACTED = "<redacted>"
 SKILL_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SETTINGS_PATH = SKILL_DIR / "config" / "defaults.json"
+SOFTWARE_SCAN_TRANSPORT_COMMAND = "sh -s"
 SAFE_SSH_OPTIONS = [
     "-o",
     "BatchMode=yes",
@@ -1065,20 +1050,43 @@ def remote_command_from_tokens(tokens: list[str]) -> str:
     return " ".join(shlex.quote(token) for token in tokens)
 
 
-def run_ssh(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def run_ssh(args: list[str], timeout: int, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     if timeout < 1:
         raise RemoteSshError("Timeout must be a positive integer.")
     try:
-        return subprocess.run(
+        if input_text is None:
+            return subprocess.run(
+                args,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        result = subprocess.run(
             args,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            input=input_text.encode("utf-8"),
             capture_output=True,
             timeout=timeout,
             check=False,
         )
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            result.stdout.decode("utf-8", errors="replace"),
+            result.stderr.decode("utf-8", errors="replace"),
+        )
     except FileNotFoundError as exc:
+        if (
+            getattr(exc, "winerror", None) == 206
+            or getattr(exc, "errno", None) == 206
+            or "too long" in str(exc).casefold()
+        ):
+            client = args[0] if args else "ssh"
+            raise RemoteSshError(
+                f"OpenSSH client '{client}' could not be started because the generated command line was too long on Windows."
+            ) from exc
         client = args[0] if args else "ssh"
         raise RemoteSshError(f"OpenSSH client '{client}' was not found on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -4027,7 +4035,17 @@ def parse_inventory(output: str) -> dict[str, Any]:
 def run_software_scan(config: dict[str, Any], settings: dict[str, Any], server: Server, args: argparse.Namespace) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     timeout = args.timeout if getattr(args, "timeout", None) is not None else default_timeout(settings)
     script = build_software_scan_script(settings)
-    result = run_ssh(build_ssh_args(config, settings, server, script, getattr(args, "accept_new_host_key", False)), timeout)
+    result = run_ssh(
+        build_ssh_args(
+            config,
+            settings,
+            server,
+            SOFTWARE_SCAN_TRANSPORT_COMMAND,
+            getattr(args, "accept_new_host_key", False),
+        ),
+        timeout,
+        input_text=script,
+    )
     inventory = parse_inventory(result.stdout) if result.returncode == 0 else {}
     return result, inventory
 
@@ -4183,12 +4201,6 @@ def cmd_inventory(args: argparse.Namespace) -> int:
         "gcc",
         "gpp",
         "cmake",
-        "vcs",
-        "verdi",
-        "urg",
-        "dve",
-        "design_compiler",
-        "primetime",
         "vivado",
         "vitis",
     ]:

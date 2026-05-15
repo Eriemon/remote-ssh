@@ -59,7 +59,7 @@
     "max_transfer_bytes": 104857600
   },
   "inventory": {
-    "catalog_version": 3,
+    "catalog_version": 2,
     "software_catalog": [
       {
         "id": "python",
@@ -121,92 +121,6 @@
           "/usr/local/bin/cmake[0-9]*"
         ],
         "version_command": "{path} --version 2>&1 | head -n 1"
-      },
-      {
-        "id": "vcs",
-        "commands": ["vcs"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/vcs",
-          "/opt/synopsys/*/bin/vcs",
-          "/usr/synopsys/*/bin/vcs",
-          "/eda/synopsys/*/bin/vcs"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
-      },
-      {
-        "id": "verdi",
-        "commands": ["verdi", "verdi3"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/verdi",
-          "/tools/synopsys/*/bin/verdi3",
-          "/opt/synopsys/*/bin/verdi",
-          "/opt/synopsys/*/bin/verdi3",
-          "/usr/synopsys/*/bin/verdi",
-          "/usr/synopsys/*/bin/verdi3",
-          "/eda/synopsys/*/bin/verdi",
-          "/eda/synopsys/*/bin/verdi3"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
-      },
-      {
-        "id": "urg",
-        "commands": ["urg"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/urg",
-          "/opt/synopsys/*/bin/urg",
-          "/usr/synopsys/*/bin/urg",
-          "/eda/synopsys/*/bin/urg"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
-      },
-      {
-        "id": "dve",
-        "commands": ["dve"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/dve",
-          "/opt/synopsys/*/bin/dve",
-          "/usr/synopsys/*/bin/dve",
-          "/eda/synopsys/*/bin/dve"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
-      },
-      {
-        "id": "design_compiler",
-        "commands": ["dc_shell", "dc_shell-xg-t"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/dc_shell",
-          "/tools/synopsys/*/bin/dc_shell-xg-t",
-          "/opt/synopsys/*/bin/dc_shell",
-          "/opt/synopsys/*/bin/dc_shell-xg-t",
-          "/usr/synopsys/*/bin/dc_shell",
-          "/usr/synopsys/*/bin/dc_shell-xg-t",
-          "/eda/synopsys/*/bin/dc_shell",
-          "/eda/synopsys/*/bin/dc_shell-xg-t"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
-      },
-      {
-        "id": "primetime",
-        "commands": ["pt_shell"],
-        "path_scan": "all",
-        "executable_globs": [
-          "/tools/synopsys/*/bin/pt_shell",
-          "/opt/synopsys/*/bin/pt_shell",
-          "/usr/synopsys/*/bin/pt_shell",
-          "/eda/synopsys/*/bin/pt_shell"
-        ],
-        "version_command": "{path} -version 2>&1 | head -n 1",
-        "install_path_command": "dirname \"$(dirname {path})\""
       },
       {
         "id": "vivado",

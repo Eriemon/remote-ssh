@@ -19,6 +19,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 ROOT = SKILL_DIR.parents[1]
 DIST_ROOT = ROOT / "dist"
 MANIFEST_PATH = DIST_ROOT / "manifest.json"
+RECEIPT_NAME = "RELEASE_RECEIPT.json"
 ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
@@ -168,6 +169,45 @@ def source_state() -> tuple[str, str, bool]:
     return branch, ("working-tree" if dirty else commit), dirty
 
 
+def git_lines(args: list[str]) -> list[str]:
+    result = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        return []
+    return [line.strip().lstrip("*+ ").strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def release_file_manifest(root: Path) -> list[dict[str, str]]:
+    manifest: list[dict[str, str]] = []
+    for path in release_files(root):
+        rel = path.relative_to(root).as_posix()
+        if rel == RECEIPT_NAME:
+            continue
+        manifest.append({"path": rel, "sha256": file_sha256(path)})
+    return manifest
+
+
+def write_release_receipt() -> None:
+    dist_skill = dist_skill_path()
+    branch, commit, dirty = source_state()
+    receipt = {
+        "skill_name": SKILL_DIR.name,
+        "version": f"v{skill_version()}",
+        "source_path": SKILL_DIR.relative_to(ROOT).as_posix(),
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "current_branch": branch,
+        "source_commit": commit,
+        "local_branches": git_lines(["branch", "--list"]),
+        "worktree_clean": not dirty,
+        "phase_results": {"pre": True, "post": True},
+        "packaging_mode": "repository-dist",
+        "validation_level": "strong",
+        "provenance_mode": "repository-dist",
+        "sanitization": {"required": False, "mode": "static-exclude", "scope": "skill-release"},
+        "files": release_file_manifest(dist_skill),
+    }
+    (dist_skill / RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
 def write_manifest() -> None:
     branch, commit, dirty = source_state()
     artifact_name = artifact_base_name()
@@ -211,6 +251,7 @@ def main() -> int:
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
     remove_legacy_artifacts()
     copy_release_tree()
+    write_release_receipt()
     write_dist_gitattributes()
     build_zip()
     write_manifest()

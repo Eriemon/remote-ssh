@@ -28,7 +28,23 @@ from typing import Any, Iterable
 
 
 DEFAULT_TIMEOUT = 20
-DEFAULT_SOFTWARE_KEYS = ["python", "conda", "cuda", "nvidia_driver", "gcc", "gpp", "cmake", "vivado", "vitis"]
+DEFAULT_SOFTWARE_KEYS = [
+    "python",
+    "conda",
+    "cuda",
+    "nvidia_driver",
+    "gcc",
+    "gpp",
+    "cmake",
+    "vcs",
+    "verdi",
+    "urg",
+    "dve",
+    "design_compiler",
+    "primetime",
+    "vivado",
+    "vitis",
+]
 REDACTED = "<redacted>"
 SKILL_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SETTINGS_PATH = SKILL_DIR / "config" / "defaults.json"
@@ -1430,22 +1446,71 @@ def request_id(operation: str) -> str:
     return f"{now}-{operation}-{uuid.uuid4().hex[:8]}"
 
 
-def command_risks(command: str) -> list[str]:
-    risks: list[str] = []
+def build_assurance_report(with_ssh: bool, real_ssh_verified: bool) -> dict[str, Any]:
+    verified_scopes = ["offline-source", "governance", "release", "installed-skill"]
+    release_version = ""
+    version_path = SKILL_DIR / "VERSION"
+    if version_path.exists():
+        release_version = version_path.read_text(encoding="utf-8").strip()
+    governance_version = "unknown"
+    project_agents = PROJECT_ROOT / "AGENTS.md"
+    if project_agents.exists():
+        match = re.search(r"generator_version=([^;> ]+)", project_agents.read_text(encoding="utf-8", errors="ignore"))
+        if match:
+            governance_version = match.group(1)
+    real_ssh_status = "not-verified"
+    message = (
+        "Offline, governance, release, and installed-skill scopes are verified. "
+        "Because real SSH checks were not run, the result cannot honestly claim remote 100% correctness. "
+        "不能诚实地声称远程 100% 正确。"
+    )
+    if with_ssh and real_ssh_verified:
+        verified_scopes.append("real-ssh")
+        real_ssh_status = "verified"
+        message = "Offline, governance, release, installed-skill, and real SSH scopes are verified."
+    elif with_ssh:
+        real_ssh_status = "failed"
+        message = "Live SSH verification was requested but did not complete successfully."
+    return {
+        "verified_scopes": verified_scopes,
+        "release_version": release_version,
+        "governance_version": governance_version,
+        "real_ssh": {
+            "status": real_ssh_status,
+            "required_flags": ["--with-ssh", "--server-list", "<real-list.json>"],
+        },
+        "message": message,
+    }
+
+
+def command_risk_records(command: str) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    seen: set[str] = set()
     checks = [
-        (r"(^|\s)sudo(\s|$)", "uses sudo"),
-        (r"(^|\s)rm(\s|$)", "contains rm"),
-        (r"(^|\s)chmod(\s|$)", "contains chmod"),
-        (r"(^|\s)chown(\s|$)", "contains chown"),
-        (r"(^|\s)/[A-Za-z0-9_.\-/]+", "mentions absolute paths"),
-        (r"[|;&]", "uses shell control operators"),
-        (r">|<", "uses redirection"),
-        (r"&\s*$", "may run in background"),
+        (r"(^|\s)(sudo|doas|su)(\s|$)", "privileged", "elevates privileges"),
+        (r"(^|\s)(rm|rmdir|del|mkfs|dd|shutdown|reboot|truncate)(\s|$)", "destructive", "can remove or destroy data"),
+        (r"(^|\s)(/[A-Za-z0-9_.\-/]+|[A-Za-z]:[\\/][^\s]+)", "path-sensitive", "targets absolute filesystem paths"),
+        (r"(\|\||&&|[|;])", "shell-composition", "chains or pipes multiple shell actions"),
+        (r"(>>?|<<|<)", "redirection", "reads from or writes to redirected streams/files"),
+        (r"(^|\s)(systemctl|service|kill|pkill|killall|nohup|sc|Start-Service|Stop-Service|Restart-Service)(\s|$)", "service/process", "touches services or long-lived processes"),
+        (r"(^|\s)(curl|wget|Invoke-WebRequest|fetch)(\s|$)|https?://", "network-fetch", "fetches data or scripts over the network"),
+        (r"(&\s*$)|(^|\s)(nohup|disown|setsid)(\s|$)|screen\s+-dm|tmux\s+new-session\s+-d", "background/detached", "can continue running after the current SSH session"),
     ]
-    for pattern, label in checks:
-        if re.search(pattern, command):
-            risks.append(label)
-    return risks or ["no obvious high-risk token detected"]
+    for pattern, category, detail in checks:
+        if re.search(pattern, command, re.IGNORECASE) and category not in seen:
+            records.append({"category": category, "detail": detail})
+            seen.add(category)
+    if not records:
+        records.append({"category": "manual-review-required", "detail": "no classified high-risk pattern was detected, but manual review is still required"})
+    return records
+
+
+def command_risk_categories(command: str) -> list[str]:
+    return [record["category"] for record in command_risk_records(command)]
+
+
+def command_risks(command: str) -> list[str]:
+    return [record["detail"] for record in command_risk_records(command)]
 
 
 def write_request(settings: dict[str, Any], request: dict[str, Any]) -> Path:
@@ -1463,6 +1528,7 @@ def create_request(
     payload: dict[str, Any],
     reason: str = "",
     risk_summary: list[str] | None = None,
+    risk_categories: list[str] | None = None,
     project: ProjectContext | None = None,
 ) -> Path:
     request = {
@@ -1478,10 +1544,14 @@ def create_request(
         request.update(project_output_record(project))
     if risk_summary is not None:
         request["risk_summary"] = risk_summary
+        request["risk_categories"] = risk_categories or (["manual-review-required"] if risk_summary else [])
     elif operation == "command":
-        request["risk_summary"] = command_risks(str(payload.get("command", "")))
+        command = str(payload.get("command", ""))
+        request["risk_summary"] = command_risks(command)
+        request["risk_categories"] = risk_categories or command_risk_categories(command)
     else:
         request["risk_summary"] = ["modifies remote workdir content"]
+        request["risk_categories"] = risk_categories or ["remote-write"]
     return write_request(settings, request)
 
 
@@ -1510,6 +1580,8 @@ def print_request_created(path: Path, request: dict[str, Any], server: Server, p
     if request.get("project_id"):
         print(f"project: {request['project_id']}")
         print("workdir_source: project")
+    for category in request.get("risk_categories", []):
+        print(f"risk_category: {category}")
     for risk in request.get("risk_summary", []):
         print(f"risk: {risk}")
 
@@ -3149,9 +3221,23 @@ def cmd_request_command(args: argparse.Namespace) -> int:
     _, settings, server, project = prepare_server_for_remote_with_project(args)
     command = remote_command_from_tokens(args.remote_command)
     payload: dict[str, Any] = {"command": command}
+    risk_categories = command_risk_categories(command)
+    risk_summary = command_risks(command)
     if args.detached:
         payload["detached"] = True
-    path = create_request(settings, "command", server, payload, reason=args.reason, project=project)
+        if "background/detached" not in risk_categories:
+            risk_categories.append("background/detached")
+            risk_summary.append("will continue running outside the current SSH session")
+    path = create_request(
+        settings,
+        "command",
+        server,
+        payload,
+        reason=args.reason,
+        risk_summary=risk_summary,
+        risk_categories=risk_categories,
+        project=project,
+    )
     print_request_created(path, load_request(path), server, project)
     return 0
 
@@ -3238,6 +3324,10 @@ def print_job_start(manifest: dict[str, Any], server: Server, manifest_path: Pat
     print(f"server: {manifest['server']}")
     if manifest.get("project_id"):
         print(f"project: {manifest['project_id']}")
+    for category in manifest.get("risk_categories", []):
+        print(f"risk_category: {category}")
+    for risk in manifest.get("risk_summary", []):
+        print(f"risk: {risk}")
     print(f"remote_job_dir: {manifest['remote_job_dir']}")
     if manifest.get("pid"):
         print(f"pid: {manifest['pid']}")
@@ -3298,12 +3388,17 @@ def start_detached_job(
     parsed = parse_key_value_output(result.stdout)
     actual_job_id = parsed.get("job_id") or requested_job_id
     remote_job_dir = parsed.get("remote_job_dir") or f"{jobs_remote_dir(settings)}/{actual_job_id}"
+    risk_records = command_risk_records(command)
+    if not any(record["category"] == "background/detached" for record in risk_records):
+        risk_records.append({"category": "background/detached", "detail": "will continue running outside the current SSH session"})
     manifest: dict[str, Any] = {
         "version": 1,
         "job_id": actual_job_id,
         "server": server.id,
         "reason": reason,
         "command": command,
+        "risk_categories": [record["category"] for record in risk_records],
+        "risk_summary": [record["detail"] for record in risk_records],
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "remote_job_dir": remote_job_dir,
         "stdout_log": f"{remote_job_dir.rstrip('/')}/stdout.log",
@@ -3395,6 +3490,8 @@ def cmd_run_request(args: argparse.Namespace) -> int:
     if request_project_id:
         print(f"project: {request_project_id}")
         print("workdir_source: project")
+    for category in request.get("risk_categories", []):
+        print(f"risk_category: {category}")
     for risk in request.get("risk_summary", []):
         print(f"risk: {risk}")
 
@@ -4086,6 +4183,12 @@ def cmd_inventory(args: argparse.Namespace) -> int:
         "gcc",
         "gpp",
         "cmake",
+        "vcs",
+        "verdi",
+        "urg",
+        "dve",
+        "design_compiler",
+        "primetime",
         "vivado",
         "vitis",
     ]:

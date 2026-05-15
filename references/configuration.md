@@ -72,7 +72,7 @@ Empty `${env:NAME}` values are ignored when used as optional validator candidate
 - `projects.default_workdir_template`: Template used by `--project <id>` and `project-init` when no explicit remote workdir is supplied. Defaults to `~/workspace/${project_id}`.
 - `files.default_remote_tmp_dir`: Reserved relative remote temp directory name for workflows that need one.
 - `files.max_transfer_bytes`: Maximum regular file size allowed for `file-download`.
-- `inventory.catalog_version`: Positive integer copied into cached software scans. Increment it when catalog behavior changes enough that old caches may be incomplete.
+- `inventory.catalog_version`: Positive integer copied into cached software scans. Increment it when catalog behavior changes enough that old caches may be incomplete. The bundled Synopsys-first catalog uses `3`, so older cached scans should be refreshed with `scan-software`.
 - `inventory.software_catalog`: Configured read-only software probes used to build the remote scan script. Each item has an `id`, optional PATH `commands`, optional `path_scan` (`first` or `all`), optional absolute `executable_globs`, optional shell `version_command` using `{path}`, optional `install_path_command`, and optional `directory_scans`.
 - `validation.positive_server`: Server selector for positive local tests.
 - `validation.warning_server`: Server selector expected to produce metadata warnings.
@@ -169,7 +169,9 @@ python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server
 python <skill-dir>\scripts\remote_ssh.py software --settings <settings> --server <id-or-name> --name vivado
 ```
 
-The bundled catalog scans Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, and Vitis. Python, CUDA, GCC/G++, and CMake include common global multi-version paths; Vivado and Vitis scan configured Xilinx install roots such as `/opt/Xilinx`, `/tools/Xilinx`, and `/usr/local/Xilinx`.
+The bundled catalog scans Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Synopsys VCS, Verdi, URG, DVE, Design Compiler, PrimeTime, Vivado, and Vitis. Python, CUDA, GCC/G++, CMake, and the Synopsys tools use common global multi-version paths; Vivado and Vitis scan configured Xilinx install roots such as `/opt/Xilinx`, `/tools/Xilinx`, and `/usr/local/Xilinx`.
+
+The bundled Synopsys catalog intentionally covers the first-wave RTL frontend set only: VCS, Verdi, URG, DVE, Design Compiler, and PrimeTime. It scans both `PATH` and common install roots such as `/tools/synopsys`, `/opt/synopsys`, `/usr/synopsys`, and `/eda/synopsys`. More specialized tools such as ICC2, Fusion Compiler, and Formality are out of scope for this first pass.
 
 Treat `inventory.software_catalog` as trusted local configuration. Its `version_command` and `install_path_command` templates are rendered into a POSIX shell script and executed read-only over SSH, so only reviewed skill or settings files should define them. Do not place untrusted user text into software catalog command templates.
 
@@ -177,7 +179,7 @@ Treat `inventory.software_catalog` as trusted local configuration. Its `version_
 
 Directory scans must use absolute POSIX `base_dirs` and relative `subdir` / `executable` values. Invalid catalog shapes, duplicate software ids, missing probes, invalid `path_scan` values, unsafe executable globs, and non-absolute scan roots should fail before SSH execution with a clear settings error.
 
-Cached `software_scan.tools.<id>.versions` records every detected install for a tool. The top-level `path`, `version`, and `install_path` remain the first detected install for compatibility, while `software --name <tool>` and the full `software` table expose multi-version entries. Cached `software_scan.raw_summary` is a local operational artifact. It can include host inventory lines and installation paths, so keep real server lists and scan caches out of public docs and committed files.
+Cached `software_scan.tools.<id>.versions` records every detected install for a tool. The top-level `path`, `version`, and `install_path` remain the first detected install for compatibility, while `software --name <tool>` and the full `software` table expose multi-version entries. This applies to Synopsys tools as well, so VCS or Verdi installs found on both `PATH` and reviewed global roots may appear as multiple `version_entry` lines. Cached `software_scan.raw_summary` is a local operational artifact. It can include host inventory lines and installation paths, so keep real server lists and scan caches out of public docs and committed files.
 
 ## Server List JSON
 

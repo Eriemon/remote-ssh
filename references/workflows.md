@@ -290,7 +290,7 @@ Use `scan-software` after key changes, tool installs, or any time the user asks 
 python <skill-dir>\scripts\remote_ssh.py scan-software --settings <settings> --server <id-or-name> --timeout 30
 ```
 
-The command is read-only on the remote host and writes the cached `software_scan` object to the local server list. It scans the configured catalog from `config/defaults.json`, including Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Vivado, Vitis, and Xilinx FPGA PCIe devices. The bundled catalog records multi-version installs from reviewed global paths such as `/usr/bin/gcc-[0-9]*`, `/usr/bin/cmake[0-9]*`, `/usr/local/cuda-*/bin/nvcc`, and Xilinx install roots. `workspace-check` also runs this scan automatically after successful workdir validation.
+The command is read-only on the remote host and writes the cached `software_scan` object to the local server list. It scans the configured catalog from `config/defaults.json`, including Python, Conda, CUDA/nvcc, NVIDIA driver, GCC, G++, CMake, Synopsys VCS, Verdi, URG, DVE, Design Compiler, PrimeTime, Vivado, Vitis, and Xilinx FPGA PCIe devices. The bundled catalog records multi-version installs from reviewed global paths such as `/usr/bin/gcc-[0-9]*`, `/usr/bin/cmake[0-9]*`, `/usr/local/cuda-*/bin/nvcc`, common Synopsys roots like `/tools/synopsys/*/bin`, and Xilinx install roots. `workspace-check` also runs this scan automatically after successful workdir validation.
 
 The software catalog is trusted local configuration because its command templates are rendered into the remote scan script. Use only reviewed settings, and treat cached `raw_summary` as local operational data rather than public documentation.
 
@@ -399,7 +399,7 @@ Use inventory for CPU/GPU/FPGA/software environment discovery:
 python <skill-dir>\scripts\remote_ssh.py inventory --settings <settings> --server <id-or-name> --timeout 30
 ```
 
-The report includes hostname, kernel, CPU model, CPU thread count, NVIDIA GPU summary, Xilinx FPGA summary, Python, Conda, CUDA, GCC, G++, CMake, Vivado, and Vitis where available.
+The report includes hostname, kernel, CPU model, CPU thread count, NVIDIA GPU summary, Xilinx FPGA summary, Python, Conda, CUDA, GCC, G++, CMake, VCS, Verdi, URG, DVE, Design Compiler, PrimeTime, Vivado, and Vitis where available.
 
 Missing tools are reported as `not detected`; this is not necessarily an error.
 

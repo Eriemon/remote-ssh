@@ -218,6 +218,13 @@ def fake_scan_output() -> str:
             "software:gcc:installed:/usr/bin/gcc-12:gcc (Ubuntu) 12.2.0:",
             "software:gpp:installed:/usr/bin/g++:g++ (Ubuntu) 12.2.0:",
             "software:cmake:installed:/usr/bin/cmake:cmake version 3.25.0:",
+            "software:vcs:installed:/tools/synopsys/vcs/O-2023.12/bin/vcs:VCS O-2023.12:/tools/synopsys/vcs/O-2023.12",
+            "software:vcs:installed:/opt/synopsys/vcs/O-2024.03/bin/vcs:VCS O-2024.03:/opt/synopsys/vcs/O-2024.03",
+            "software:verdi:installed:/tools/synopsys/verdi/O-2023.12/bin/verdi:Verdi O-2023.12:/tools/synopsys/verdi/O-2023.12",
+            "software:urg:installed:/tools/synopsys/vcs/O-2023.12/bin/urg:URG O-2023.12:/tools/synopsys/vcs/O-2023.12",
+            "software:dve:installed:/tools/synopsys/vcs/O-2023.12/bin/dve:DVE O-2023.12:/tools/synopsys/vcs/O-2023.12",
+            "software:design_compiler:installed:/tools/synopsys/dc/O-2023.12/bin/dc_shell:Design Compiler O-2023.12:/tools/synopsys/dc/O-2023.12",
+            "software:primetime:installed:/tools/synopsys/pt/O-2023.12/bin/pt_shell:PrimeTime O-2023.12:/tools/synopsys/pt/O-2023.12",
             "software:vivado:installed:/tools/Xilinx/Vivado/2024.1/bin/vivado:Vivado v2024.1:/tools/Xilinx/Vivado/2024.1",
             "software:vitis:installed:/tools/Xilinx/Vitis/2024.1/bin/vitis:Vitis v2024.1:/tools/Xilinx/Vitis/2024.1",
             "fpga_device:0:0000:01:00.0:0000:01:00.1",
@@ -228,32 +235,66 @@ def fake_scan_output() -> str:
 
 def compact_scan_inventory() -> dict[str, Any]:
     return {
-        "catalog_version": 2,
+        "catalog_version": 3,
         "software_catalog": [
             {
                 "id": "gcc",
                 "commands": ["gcc"],
                 "path_scan": "all",
-                "executable_globs": ["/usr/bin/gcc-[0-9]*"],
                 "version_command": "{path} --version 2>&1 | head -n 1",
             },
             {
                 "id": "cuda",
                 "commands": ["nvcc"],
-                "executable_globs": ["/usr/local/cuda-*/bin/nvcc"],
                 "version_command": "{path} --version 2>&1 | awk '/release/ {print $0; exit}'",
                 "install_path_command": "dirname \"$(dirname {path})\"",
             },
             {
+                "id": "vcs",
+                "commands": ["vcs"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
+                "id": "verdi",
+                "commands": ["verdi"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
+                "id": "urg",
+                "commands": ["urg"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
+                "id": "dve",
+                "commands": ["dve"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
+                "id": "design_compiler",
+                "commands": ["dc_shell"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
+                "id": "primetime",
+                "commands": ["pt_shell"],
+                "path_scan": "all",
+                "version_command": "{path} -version 2>&1 | head -n 1",
+                "install_path_command": "dirname \"$(dirname {path})\"",
+            },
+            {
                 "id": "vivado",
-                "directory_scans": [
-                    {
-                        "base_dirs": ["/tools/Xilinx"],
-                        "subdir": "Vivado",
-                        "executable": "bin/vivado",
-                        "version_command": "{path} -version 2>&1 | head -n 1",
-                    }
-                ],
+                "commands": ["vivado"],
+                "version_command": "{path} -version 2>&1 | head -n 1",
             },
         ],
     }
@@ -648,6 +689,81 @@ def require_output_field(output: str, field: str, label: str) -> None:
     assert_contains(output, f"{field}:", label)
 
 
+def expected_governance_version() -> str:
+    project_agents = ROOT / "AGENTS.md"
+    if not project_agents.exists():
+        return "unknown"
+    match = re.search(r"generator_version=([^;> ]+)", project_agents.read_text(encoding="utf-8", errors="ignore"))
+    if match:
+        return match.group(1)
+    return "unknown"
+
+
+def validate_workspace_session_review_count(
+    inspected_count: int,
+    reviewed_count: int,
+    reviewed_handoff: int,
+    handoff_count: int,
+) -> None:
+    if reviewed_count == inspected_count:
+        return
+    # A single new exact-cwd session may exist before the next handoff refreshes
+    # docs-governance-state.json. Treat that one-session gap as an active
+    # in-progress review window, but reject larger drift.
+    if reviewed_handoff == handoff_count and inspected_count == reviewed_count + 1:
+        return
+    raise ValidationError(
+        "docs governance state last_workspace_session_count must match the latest "
+        "review boundary. Only one in-progress exact-cwd session beyond the last "
+        f"reviewed handoff is allowed (reviewed={reviewed_count}, inspected={inspected_count}, "
+        f"reviewed_handoff={reviewed_handoff}, handoff_count={handoff_count})."
+    )
+
+
+def governance_window_tests() -> None:
+    validate_workspace_session_review_count(14, 14, 10, 10)
+    validate_workspace_session_review_count(15, 14, 10, 10)
+    for inspected, reviewed, reviewed_handoff, handoff_count in [
+        (13, 14, 10, 10),
+        (16, 14, 10, 10),
+        (15, 14, 9, 10),
+    ]:
+        try:
+            validate_workspace_session_review_count(inspected, reviewed, reviewed_handoff, handoff_count)
+        except ValidationError as exc:
+            assert_contains(str(exc), "last_workspace_session_count", "workspace review drift guard")
+        else:
+            raise ValidationError(
+                "workspace review drift guard accepted an invalid session freshness combination"
+            )
+
+
+def assurance_scope_tests() -> None:
+    builder = getattr(remote_ssh, "build_assurance_report", None)
+    if builder is None:
+        raise ValidationError("remote_ssh.py must expose build_assurance_report for validator output contracts.")
+
+    offline = builder(with_ssh=False, real_ssh_verified=False)
+    if offline.get("verified_scopes") != ["offline-source", "governance", "release", "installed-skill"]:
+        raise ValidationError(f"unexpected offline assurance scopes: {offline}")
+    if offline.get("release_version") != skill_version():
+        raise ValidationError(f"assurance report release_version must match VERSION: {offline}")
+    if offline.get("governance_version") != expected_governance_version():
+        raise ValidationError(f"assurance report governance_version must report AGENTS generator metadata or unknown in isolated fixtures: {offline}")
+    real_ssh = offline.get("real_ssh") or {}
+    if real_ssh.get("status") != "not-verified":
+        raise ValidationError(f"offline assurance must mark real SSH as not-verified: {offline}")
+    if "不能诚实地声称远程 100% 正确" not in str(offline.get("message", "")):
+        raise ValidationError(f"offline assurance message must state the remote-confidence boundary: {offline}")
+
+    online = builder(with_ssh=True, real_ssh_verified=True)
+    if online.get("verified_scopes") != ["offline-source", "governance", "release", "installed-skill", "real-ssh"]:
+        raise ValidationError(f"unexpected real-ssh assurance scopes: {online}")
+    online_real_ssh = online.get("real_ssh") or {}
+    if online_real_ssh.get("status") != "verified":
+        raise ValidationError(f"real SSH assurance must report verified when live checks pass: {online}")
+
+
 def governance_alignment_tests() -> None:
     if not (ROOT / "AGENTS.md").exists():
         return
@@ -657,21 +773,58 @@ def governance_alignment_tests() -> None:
         raise ValidationError(f"root AGENTS.md should not remain trigger-required:\n{inspect.stdout}")
     if inspect_data.get("root_agents_md_rebuild_required"):
         raise ValidationError(f"root AGENTS.md should not remain rebuild-required:\n{inspect.stdout}")
-
     state_path = ROOT / ".agents" / "docs-governance-state.json"
     state = load_ref(state_path)
     handoff_count = int(state.get("handoff_count", 0))
     reviewed_handoff = int(state.get("last_workspace_session_reviewed_handoff", 0))
     reviewed_count = int(state.get("last_workspace_session_count", 0))
     reviewed_at = str(state.get("last_workspace_session_sync_at", "")).strip()
+    cross_project_count = int(state.get("last_cross_project_remote_ssh_session_count", 0))
+    cross_project_sync_at = str(state.get("last_cross_project_remote_ssh_session_sync_at", "")).strip()
+    if int(state.get("last_experience_at", 0)) != handoff_count:
+        raise ValidationError("docs governance state must keep last_experience_at aligned with the latest handoff_count.")
     if reviewed_handoff != handoff_count:
         raise ValidationError(
             "docs governance state must record the exact handoff count used for the latest workspace-session freshness review"
         )
-    if reviewed_count != int(inspect_data.get("matched_session_count", -1)):
-        raise ValidationError("docs governance state last_workspace_session_count must match inspect_project matched_session_count")
+    validate_workspace_session_review_count(
+        int(inspect_data.get("matched_session_count", -1)),
+        reviewed_count,
+        reviewed_handoff,
+        handoff_count,
+    )
     if not reviewed_at:
         raise ValidationError("docs governance state must record last_workspace_session_sync_at")
+    if cross_project_count <= 0:
+        raise ValidationError("docs governance state must record a positive last_cross_project_remote_ssh_session_count.")
+    if not cross_project_sync_at:
+        raise ValidationError("docs governance state must record last_cross_project_remote_ssh_session_sync_at.")
+
+    control = load_ref(ROOT / ".agents" / "agents-control.json")
+    branch_policy = control.get("git_branch_policy") or {}
+    if branch_policy.get("release_requires_merge_to_master") is not True:
+        raise ValidationError("agents-control git_branch_policy.release_requires_merge_to_master must be true for strict release flow.")
+    if branch_policy.get("delete_other_local_branches_before_release") is not True:
+        raise ValidationError("agents-control git_branch_policy.delete_other_local_branches_before_release must be true for strict release flow.")
+    patterns = ((control.get("skill_design_contract") or {}).get("patterns")) or []
+    if patterns != ["Tool Wrapper", "Pipeline", "Reviewer", "Inversion"]:
+        raise ValidationError(f"agents-control skill_design_contract.patterns must be the reduced standard set: {patterns}")
+
+    for agents_path in [ROOT / "AGENTS.md", ROOT / "docs" / "AGENTS.md"]:
+        if not agents_path.exists():
+            continue
+        agents_text = agents_path.read_text(encoding="utf-8")
+        assert_not_contains(agents_text, "Last verified: never", f"{agents_path.name} metadata")
+    assert_contains((ROOT / "AGENTS.md").read_text(encoding="utf-8"), "Release version source", "AGENTS versioning clarification")
+    assert_not_contains((ROOT / "AGENTS.md").read_text(encoding="utf-8"), "Design patterns: Tool Wrapper, Generator, Reviewer, Inversion, Pipeline.", "AGENTS design pattern list")
+
+    handoff_text = (ROOT / "docs" / "handoff" / "HANDOFF.md").read_text(encoding="utf-8")
+    assert_contains(handoff_text, "不能诚实地声称远程 100% 正确", "handoff real-ssh boundary")
+
+    workflow_text = (ROOT / "docs" / "experience" / "1-workflow.md").read_text(encoding="utf-8")
+    assert_contains(workflow_text, f"`handoff_count={handoff_count}`", "workflow experience freshness")
+    latest_snapshot = f"handoff-{handoff_count}.json"
+    assert_contains(workflow_text, latest_snapshot, "workflow experience latest snapshot reference")
 
     required_docs = [
         SKILL_DIR / "references" / "integration-contract.md",
@@ -941,6 +1094,9 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     positive_server = config["servers"][0]["id"]
     scan_result = run_tool(["scan-software", "--settings", str(temp_settings), "--server", positive_server])
     assert_contains(scan_result.stdout, "software_scan_status: ok", "scan-software output")
+    assert_contains(scan_result.stdout, "vcs\tinstalled", "scan-software output")
+    assert_contains(scan_result.stdout, "verdi\tinstalled", "scan-software output")
+    assert_contains(scan_result.stdout, "design_compiler\tinstalled", "scan-software output")
     assert_contains(scan_result.stdout, "vivado\tinstalled", "scan-software output")
 
     updated = load_ref(server_list)
@@ -948,6 +1104,10 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     if not snapshot or snapshot.get("status") != "ok":
         raise ValidationError(f"scan-software did not cache an ok snapshot: {updated}")
     tools = snapshot.get("tools", {})
+    if tools.get("vcs", {}).get("install_path") != "/tools/synopsys/vcs/O-2023.12":
+        raise ValidationError(f"scan-software did not cache VCS install path: {snapshot}")
+    if tools.get("design_compiler", {}).get("install_path") != "/tools/synopsys/dc/O-2023.12":
+        raise ValidationError(f"scan-software did not cache Design Compiler install path: {snapshot}")
     if tools.get("vivado", {}).get("install_path") != "/tools/Xilinx/Vivado/2024.1":
         raise ValidationError(f"scan-software did not cache Vivado install path: {snapshot}")
     if snapshot.get("fpga_devices", [{}])[0].get("pcie_bdf_mgmt") != "0000:01:00.0":
@@ -958,15 +1118,35 @@ def software_scan_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
         raise ValidationError(f"scan-software did not cache all GCC versions: {snapshot}")
     if len(tools.get("cuda", {}).get("versions", [])) != 2:
         raise ValidationError(f"scan-software did not cache all CUDA versions: {snapshot}")
+    if len(tools.get("vcs", {}).get("versions", [])) != 2:
+        raise ValidationError(f"scan-software did not cache all VCS versions: {snapshot}")
 
     software_table_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server])
     assert_contains(software_table_result.stdout, "gcc\tinstalled\t/usr/bin/gcc-11", "cached software table output")
     assert_contains(software_table_result.stdout, "cuda\tinstalled\t/usr/local/cuda-12.2/bin/nvcc", "cached software table output")
+    assert_contains(software_table_result.stdout, "vcs\tinstalled\t/opt/synopsys/vcs/O-2024.03/bin/vcs", "cached software table output")
 
     software_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "cuda"])
     assert_contains(software_result.stdout, "status: installed", "cached cuda output")
     assert_contains(software_result.stdout, "path: /usr/local/cuda-11.8/bin/nvcc", "cached cuda output")
     assert_contains(software_result.stdout, "version_entry: /usr/local/cuda-12.2/bin/nvcc", "cached cuda output")
+
+    vcs_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "vcs"])
+    assert_contains(vcs_result.stdout, "status: installed", "cached vcs output")
+    assert_contains(vcs_result.stdout, "path: /tools/synopsys/vcs/O-2023.12/bin/vcs", "cached vcs output")
+    assert_contains(vcs_result.stdout, "install_path: /tools/synopsys/vcs/O-2023.12", "cached vcs output")
+    assert_contains(vcs_result.stdout, "version_entry: /opt/synopsys/vcs/O-2024.03/bin/vcs", "cached vcs output")
+
+    dc_result = run_tool(["software", "--settings", str(temp_settings), "--server", positive_server, "--name", "design_compiler"])
+    assert_contains(dc_result.stdout, "status: installed", "cached design_compiler output")
+    assert_contains(dc_result.stdout, "path: /tools/synopsys/dc/O-2023.12/bin/dc_shell", "cached design_compiler output")
+    assert_contains(dc_result.stdout, "install_path: /tools/synopsys/dc/O-2023.12", "cached design_compiler output")
+
+    inventory_result = run_tool(["inventory", "--settings", str(temp_settings), "--server", positive_server])
+    assert_contains(inventory_result.stdout, "vcs: VCS O-2023.12", "cached inventory output")
+    assert_contains(inventory_result.stdout, "verdi: Verdi O-2023.12", "cached inventory output")
+    assert_contains(inventory_result.stdout, "design_compiler: Design Compiler O-2023.12", "cached inventory output")
+    assert_contains(inventory_result.stdout, "primetime: PrimeTime O-2023.12", "cached inventory output")
 
     bad_catalog = tmp_dir / "bad-catalog-settings.json"
     bad_settings = load_ref(temp_settings)
@@ -1443,6 +1623,64 @@ def project_root_semantics_tests(tmp_dir: Path) -> None:
         raise ValidationError(f"release layout default upload_roots drifted: {release_roots}")
 
 
+def session_mining_contract_tests(tmp_dir: Path) -> None:
+    miner_path = SKILL_DIR / "scripts" / "mine_remote_ssh_sessions.py"
+    if not miner_path.exists():
+        raise ValidationError("missing session miner script: scripts/mine_remote_ssh_sessions.py")
+
+    miner = load_remote_ssh_fixture(miner_path, "remote_ssh_session_miner_fixture")
+    builder = getattr(miner, "build_summary", None)
+    if builder is None:
+        raise ValidationError("mine_remote_ssh_sessions.py must expose build_summary().")
+
+    sessions_root = tmp_dir / "session-fixtures"
+    exact_session = sessions_root / "2026" / "05" / "14" / "exact.jsonl"
+    exact_session.parent.mkdir(parents=True, exist_ok=True)
+    exact_lines = [
+        {"timestamp": "2026-05-14T01:00:00Z", "payload": {"session_meta": {"payload": {"cwd": str(ROOT)}}}},
+        {"timestamp": "2026-05-14T01:00:01Z", "payload": {"message": "same-host workspace-check Permission denied timed out"}},
+    ]
+    exact_session.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in exact_lines) + "\n", encoding="utf-8")
+
+    cross_session = sessions_root / "2026" / "05" / "14" / "cross.jsonl"
+    cross_lines = [
+        {"timestamp": "2026-05-14T02:00:00Z", "payload": {"session_meta": {"payload": {"cwd": "F:/Other/Project"}}}},
+        {"timestamp": "2026-05-14T02:00:01Z", "payload": {"message": "configure-key exec-detached ssh-config-discover Connection reset"}},
+    ]
+    cross_session.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in cross_lines) + "\n", encoding="utf-8")
+
+    ignored_session = sessions_root / "2026" / "05" / "14" / "ignored.jsonl"
+    ignored_session.write_text(json.dumps({"payload": {"message": "plain unrelated text"}}, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    summary = builder(sessions_root=sessions_root, target_cwd=str(ROOT))
+    if summary.get("exact_cwd_session_count") != 1:
+        raise ValidationError(f"session miner exact-cwd count drifted: {summary}")
+    if summary.get("cross_project_session_count") != 1:
+        raise ValidationError(f"session miner cross-project count drifted: {summary}")
+    if summary.get("total_remote_ssh_session_count") != 2:
+        raise ValidationError(f"session miner total count drifted: {summary}")
+
+    themes = summary.get("themes") or {}
+    for theme in [
+        "same-host disambiguation",
+        "configure-key repair",
+        "workspace-check/auth",
+        "exec-detached/job resume",
+        "ssh-config-discover fallback",
+    ]:
+        if int(themes.get(theme, 0)) < 1:
+            raise ValidationError(f"session miner missing theme {theme!r}: {summary}")
+
+    failures = summary.get("typical_failure_modes") or {}
+    for failure in ["permission-denied", "connection-reset", "timed-out"]:
+        if int(failures.get(failure, 0)) < 1:
+            raise ValidationError(f"session miner missing failure mode {failure!r}: {summary}")
+
+    recommendations = summary.get("recommended_hardening") or []
+    if not recommendations:
+        raise ValidationError(f"session miner must provide recommended_hardening: {summary}")
+
+
 def subprocess_decoding_tests(tmp_dir: Path) -> None:
     helper = create_invalid_utf8_helper(tmp_dir)
     try:
@@ -1791,6 +2029,7 @@ def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     start_result = run_tool(["exec-detached", "--settings", str(temp_settings), "--server", server_id, "--reason", "long validation", "--", "sleep", "30"])
     assert_contains(start_result.stdout, "status: started", "exec-detached output")
     assert_contains(start_result.stdout, "job_id: job-abc", "exec-detached output")
+    assert_contains(start_result.stdout, "risk_category: background/detached", "exec-detached output")
     for field in ["server_id", "server_name", "workdir_status", "software_cache_status", "message", "next_action"]:
         require_output_field(start_result.stdout, field, "exec-detached output")
     manifest = jobs_root / "job-abc.json"
@@ -1811,6 +2050,7 @@ def detached_job_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
     assert_not_contains(tail_result.stdout, "line one", "tail-log output")
 
     request_result = run_tool(["request-command", "--settings", str(temp_settings), "--server", server_id, "--reason", "detached validation", "--detached", "--", "make", "hw"])
+    assert_contains(request_result.stdout, "risk_category: background/detached", "request-command --detached output")
     detached_request = request_from_output(request_result.stdout)
     if detached_request.get("payload", {}).get("detached") is not True:
         raise ValidationError(f"request-command --detached did not mark the request: {detached_request}")
@@ -2373,8 +2613,8 @@ def request_and_path_tests(settings: dict[str, Any], settings_path: Path, server
         raise ValidationError("request-delete without --recursive did not record recursive=false")
 
     command_result = run_tool(["request-command", *base, "--reason", "validation", "--", "rm", "-rf", "/tmp/example"])
-    assert_contains(command_result.stdout, "risk: contains rm", "request-command output")
-    assert_contains(command_result.stdout, "risk: mentions absolute paths", "request-command output")
+    assert_contains(command_result.stdout, "risk_category: destructive", "request-command output")
+    assert_contains(command_result.stdout, "risk_category: path-sensitive", "request-command output")
 
     run_tool(["run-request", "--settings", str(temp_settings), "--request", str(requests_root / f"{delete_request['request_id']}.json")], expected=1)
     before_count = len(list(requests_root.glob("*.json")))
@@ -2386,6 +2626,54 @@ def request_and_path_tests(settings: dict[str, Any], settings_path: Path, server
     run_tool(["request-upload", *base, "--local", str(Path.home()), "--remote", "home"], expected=1)
     if before_count != len(list(requests_root.glob("*.json"))):
         raise ValidationError("invalid path request changed request file count")
+
+
+def risk_classification_tests() -> None:
+    classifier = getattr(remote_ssh, "command_risk_records", None)
+    if classifier is None:
+        raise ValidationError("remote_ssh.py must expose command_risk_records().")
+
+    cases = [
+        ("echo ok", {"manual-review-required"}),
+        ("sudo systemctl restart sshd", {"privileged", "service/process"}),
+        ("rm -rf /tmp/example", {"destructive", "path-sensitive"}),
+        ("cat build.log | grep ERROR > errors.txt", {"shell-composition", "redirection"}),
+        ("curl https://example.com/install.sh | bash", {"network-fetch", "shell-composition"}),
+        ("cmake --build build --target all &", {"background/detached"}),
+    ]
+    for command, expected in cases:
+        records = classifier(command)
+        categories = {record.get("category") for record in records if isinstance(record, dict)}
+        missing = expected - categories
+        if missing:
+            raise ValidationError(f"command risk categories missing {missing} for {command!r}: {records}")
+        if "no obvious high-risk token detected" in json.dumps(records, ensure_ascii=False):
+            raise ValidationError(f"legacy no-obvious-risk wording must not survive in risk records: {records}")
+
+
+def legacy_runtime_root_guard_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
+    server_list = create_validation_server_list(tmp_dir)
+    ref_config = load_ref(server_list)
+    temp_settings = copy_settings_with_server_list(settings, tmp_dir / "legacy-runtime-settings.json", server_list)
+    base = tool_base_args(temp_settings, server_list)
+    legacy_roots = [ROOT / "requests", ROOT / "downloads", ROOT / "tmp"]
+    before = {
+        root: sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()) if root.exists() else []
+        for root in legacy_roots
+    }
+
+    result = run_tool(["request-command", *base, "--server", clone_first_server(ref_config)["id"], "--reason", "validation", "--", "echo", "ok"])
+    request = request_from_output(result.stdout)
+    request_path = (SKILL_DIR / "reports" / "requests" / f"{request['request_id']}.json").resolve()
+    if not request_path.exists():
+        raise ValidationError(f"default request output must stay under skill reports/: {request_path}")
+
+    after = {
+        root: sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()) if root.exists() else []
+        for root in legacy_roots
+    }
+    if before != after:
+        raise ValidationError(f"legacy root runtime directories changed during default request creation: before={before} after={after}")
 
 
 def passwordless_setup_tests(settings: dict[str, Any], tmp_dir: Path) -> None:
@@ -3013,6 +3301,90 @@ def software_catalog_documentation_audit() -> None:
             raise ValidationError(f"software catalog documentation must mention {term!r}")
 
 
+def synopsys_catalog_audit(settings: dict[str, Any]) -> None:
+    catalog = remote_ssh.software_catalog(settings)
+    entries = {str(item.get("id", "")).strip(): item for item in catalog}
+    required = {
+        "vcs": {
+            "commands": ["vcs"],
+            "globs": [
+                "/tools/synopsys/*/bin/vcs",
+                "/opt/synopsys/*/bin/vcs",
+                "/usr/synopsys/*/bin/vcs",
+                "/eda/synopsys/*/bin/vcs",
+            ],
+        },
+        "verdi": {
+            "commands": ["verdi", "verdi3"],
+            "globs": [
+                "/tools/synopsys/*/bin/verdi",
+                "/tools/synopsys/*/bin/verdi3",
+                "/opt/synopsys/*/bin/verdi",
+                "/opt/synopsys/*/bin/verdi3",
+                "/usr/synopsys/*/bin/verdi",
+                "/usr/synopsys/*/bin/verdi3",
+                "/eda/synopsys/*/bin/verdi",
+                "/eda/synopsys/*/bin/verdi3",
+            ],
+        },
+        "urg": {
+            "commands": ["urg"],
+            "globs": [
+                "/tools/synopsys/*/bin/urg",
+                "/opt/synopsys/*/bin/urg",
+                "/usr/synopsys/*/bin/urg",
+                "/eda/synopsys/*/bin/urg",
+            ],
+        },
+        "dve": {
+            "commands": ["dve"],
+            "globs": [
+                "/tools/synopsys/*/bin/dve",
+                "/opt/synopsys/*/bin/dve",
+                "/usr/synopsys/*/bin/dve",
+                "/eda/synopsys/*/bin/dve",
+            ],
+        },
+        "design_compiler": {
+            "commands": ["dc_shell", "dc_shell-xg-t"],
+            "globs": [
+                "/tools/synopsys/*/bin/dc_shell",
+                "/tools/synopsys/*/bin/dc_shell-xg-t",
+                "/opt/synopsys/*/bin/dc_shell",
+                "/opt/synopsys/*/bin/dc_shell-xg-t",
+                "/usr/synopsys/*/bin/dc_shell",
+                "/usr/synopsys/*/bin/dc_shell-xg-t",
+                "/eda/synopsys/*/bin/dc_shell",
+                "/eda/synopsys/*/bin/dc_shell-xg-t",
+            ],
+        },
+        "primetime": {
+            "commands": ["pt_shell"],
+            "globs": [
+                "/tools/synopsys/*/bin/pt_shell",
+                "/opt/synopsys/*/bin/pt_shell",
+                "/usr/synopsys/*/bin/pt_shell",
+                "/eda/synopsys/*/bin/pt_shell",
+            ],
+        },
+    }
+    for tool_id, expectation in required.items():
+        item = entries.get(tool_id)
+        if item is None:
+            raise ValidationError(f"default software catalog missing Synopsys tool {tool_id!r}")
+        if str(item.get("path_scan", "")).strip().casefold() != "all":
+            raise ValidationError(f"Synopsys tool {tool_id!r} must use path_scan=all")
+        if list(item.get("commands", [])) != expectation["commands"]:
+            raise ValidationError(f"Synopsys tool {tool_id!r} commands do not match the expected contract")
+        if str(item.get("version_command", "")).strip() != "{path} -version 2>&1 | head -n 1":
+            raise ValidationError(f"Synopsys tool {tool_id!r} must use the standard -version probe")
+        if str(item.get("install_path_command", "")).strip() != "dirname \"$(dirname {path})\"":
+            raise ValidationError(f"Synopsys tool {tool_id!r} must expose install_path_command")
+        globs = list(item.get("executable_globs", []) or [])
+        if globs != expectation["globs"]:
+            raise ValidationError(f"Synopsys tool {tool_id!r} executable_globs do not match the expected roots")
+
+
 def default_reports_path_audit(settings: dict[str, Any]) -> None:
     expected_requests = SKILL_DIR / "reports" / "requests"
     expected_downloads = SKILL_DIR / "reports" / "downloads"
@@ -3243,6 +3615,19 @@ def current_git_branch() -> str:
     if result.returncode != 0 or not branch:
         raise ValidationError(f"failed to resolve current git branch\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     return branch
+
+
+def current_git_status_lines() -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValidationError(f"failed to resolve current git status\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    return [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def release_file_count(path: Path) -> int:
@@ -3526,6 +3911,11 @@ def release_manifest_audit(version: str) -> None:
         raise ValidationError("release manifest source_commit must be a full lowercase Git hash or working-tree")
     if source_commit == "working-tree" and manifest.get("source_dirty") is not True:
         raise ValidationError("release manifest source_dirty must be true when source_commit is working-tree")
+    if current_git_branch() == "master":
+        if source_commit == "working-tree" or manifest.get("source_dirty") is True:
+            raise ValidationError("formal release artifacts on master must not be built from a dirty worktree")
+        if current_git_status_lines():
+            raise ValidationError("formal release verification on master requires a clean git status")
     directory_artifact = artifact_root / str(manifest.get("directory_artifact"))
     zip_artifact = artifact_root / str(manifest.get("zip_artifact"))
     expected_directory = ROOT / "dist" / expected_base
@@ -3571,6 +3961,12 @@ def design_pattern_audit() -> None:
     for mention in required_mentions:
         if mention.casefold() not in lower_text:
             raise ValidationError(f"SKILL.md must mention {mention!r}")
+    control_path = ROOT / ".agents" / "agents-control.json"
+    if control_path.exists():
+        control = load_ref(control_path)
+        patterns = ((control.get("skill_design_contract") or {}).get("patterns")) or []
+        if "Generator" in patterns:
+            raise ValidationError("Generator must not remain in the primary declared design pattern set for RemoteSSH.")
 
     pipeline_terms = ["discover", "configure", "setup-key", "check", "workspace-check", "run-request"]
     last_position = -1
@@ -3704,6 +4100,8 @@ def main() -> int:
     tmp_dir.mkdir(parents=True)
     try:
         version = skill_version()
+        assurance_scope_tests()
+        governance_window_tests()
         markdown_encoding_guard_tests(tmp_dir)
         release_artifact_naming_audit(version)
         markdown_encoding_artifact_audit()
@@ -3717,6 +4115,7 @@ def main() -> int:
         extraneous_docs_audit()
         references_linked_audit()
         software_catalog_documentation_audit()
+        synopsys_catalog_audit(settings)
         default_reports_path_audit(settings)
         skill_local_gitignore_audit()
         repository_gitignore_audit()
@@ -3737,6 +4136,7 @@ def main() -> int:
         workspace_check_writeback_tests(settings, tmp_dir)
         project_workdir_tests(settings, tmp_dir)
         project_root_semantics_tests(tmp_dir)
+        session_mining_contract_tests(tmp_dir)
         discovery_and_add_tests(settings, tmp_dir)
         ssh_config_fallback_tests(settings, tmp_dir)
         cmd_guidance_tests(settings, settings_path, server_list, ref_config, tmp_dir)
@@ -3744,6 +4144,8 @@ def main() -> int:
         install_skill_protection_tests(tmp_dir)
         configuration_gate_tests(settings, tmp_dir)
         request_and_path_tests(settings, settings_path, server_list, ref_config, tmp_dir)
+        risk_classification_tests()
+        legacy_runtime_root_guard_tests(settings, tmp_dir)
         passwordless_setup_tests(settings, tmp_dir)
         key_only_repair_tests(settings, tmp_dir)
         script_tests(settings, tmp_dir)
@@ -3765,7 +4167,14 @@ def main() -> int:
     finally:
         cleanup_generated_dirs(tmp_dir, cleanup_roots)
 
-    print("Erie Remote SSH validation passed.")
+    report = remote_ssh.build_assurance_report(with_ssh=bool(args.with_ssh), real_ssh_verified=bool(args.with_ssh))
+    print("status: passed")
+    print(f"release_version: {report['release_version']}")
+    print(f"governance_version: {report['governance_version']}")
+    print(f"verified_scopes: {', '.join(report['verified_scopes'])}")
+    print(f"real_ssh_status: {report['real_ssh']['status']}")
+    print(f"real_ssh_required_flags: {' '.join(report['real_ssh']['required_flags'])}")
+    print(f"message: {report['message']}")
     return 0
 
 

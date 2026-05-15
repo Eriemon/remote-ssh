@@ -19,7 +19,7 @@ Use this checklist before declaring an Erie Remote SSH task or skill change full
 - Every file under `references/` is directly linked from `SKILL.md`.
 - No README, installation guide, changelog, or unrelated documentation is added inside the skill.
 - Paths, validation targets, and tool locations are settings-driven rather than hardcoded in scripts.
-- Software inventory probes, multi-version PATH scans, executable globs, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
+- Software inventory probes, multi-version PATH scans, executable globs, Synopsys install roots, and Xilinx install roots are settings-driven through `inventory.software_catalog`.
 - Discovery and add-server workflows are represented in `SKILL.md` without bloating the skill body.
 - SSH config alias fallback and detached job workflows are represented in `SKILL.md` without bloating the skill body.
 - The configuration gate is documented at both levels: the agent asks the user in conversation first, and the CLI requires explicit manual/script/cancel input before any server-list mutation.
